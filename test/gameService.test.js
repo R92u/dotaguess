@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   chooseDailyMatches,
   combinePlayerMatchPools,
+  orderDailyCandidates,
   GameService
 } from '../src/gameService.js';
 import { normalizeItemsById } from '../src/openDota.js';
@@ -146,6 +147,36 @@ test('combined pool takes 100 newest unique matches from all players', () => {
   assert.ok(pool.every((match) => [123, 456].includes(match.targetAccountId)));
 });
 
+test('pool is frozen at Moscow midnight and ignores matches started during the day', () => {
+  const midnightMoscowUnix = Math.floor(Date.parse('2026-07-24T00:00:00+03:00') / 1000);
+  const pool = combinePlayerMatchPools([
+    {
+      accountId: 123,
+      matches: [
+        { match_id: 1, start_time: midnightMoscowUnix - 1 },
+        { match_id: 2, start_time: midnightMoscowUnix },
+        { match_id: 3, start_time: midnightMoscowUnix + 500 }
+      ]
+    }
+  ], 100, midnightMoscowUnix);
+  assert.deepEqual(pool.map((match) => match.match_id), [1]);
+});
+
+test('daily candidate order is deterministic for every visitor and server instance', () => {
+  const matches = [
+    { match_id: 10, targetAccountId: 123 },
+    { match_id: 20, targetAccountId: 456 },
+    { match_id: 30, targetAccountId: 123 },
+    { match_id: 40, targetAccountId: 456 }
+  ];
+  const first = orderDailyCandidates(matches, '2026-07-24', 'same-secret');
+  const second = orderDailyCandidates([...matches].reverse(), '2026-07-24', 'same-secret');
+  assert.deepEqual(
+    first.map((match) => match.match_id),
+    second.map((match) => match.match_id)
+  );
+});
+
 test('two daily matches are unique and exclude yesterday when possible', () => {
   const matches = [{ match_id: 10 }, { match_id: 20 }, { match_id: 30 }, { match_id: 40 }];
   const selected = chooseDailyMatches(matches, 2, [10, 20], () => 0, 100);
@@ -178,7 +209,7 @@ test('public payload contains two games from configured players without results 
   const result = await service.getPublicGame(new Date('2026-07-24T10:00:00Z'));
   const serialized = JSON.stringify(result);
 
-  assert.equal(result.schemaVersion, 4);
+  assert.equal(result.schemaVersion, 5);
   assert.equal(result.games.length, 2);
   assert.ok([123, 456].includes(result.games[0].player.accountId));
   assert.equal(result.games[0].match.team[0].isTarget, true);

@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { getMoscowDateKey, getNextMoscowMidnightIso } from './time.js';
 
-const RECORD_SCHEMA_VERSION = 4;
+const RECORD_SCHEMA_VERSION = 5;
 const MATCHES_PER_DAY = 2;
 const DEFAULT_MATCH_POOL_SIZE = 100;
 
@@ -197,13 +197,22 @@ function isValidRecord(record) {
   );
 }
 
-export function combinePlayerMatchPools(matchLists, poolSize = DEFAULT_MATCH_POOL_SIZE) {
+export function combinePlayerMatchPools(
+  matchLists,
+  poolSize = DEFAULT_MATCH_POOL_SIZE,
+  beforeStartTime = Number.POSITIVE_INFINITY
+) {
   const combined = [];
+  const cutoff = Number(beforeStartTime);
   for (const entry of matchLists || []) {
     const accountId = Number(entry?.accountId);
     if (!accountId || !Array.isArray(entry?.matches)) continue;
     for (const match of entry.matches) {
       if (!match?.match_id) continue;
+      const startTime = asNumber(match.start_time, -1);
+      // Пул дня фиксируется на 00:00 МСК: матчи, начавшиеся после
+      // полуночи текущего дня, не могут сдвинуть выбор для других посетителей.
+      if (Number.isFinite(cutoff) && (startTime < 0 || startTime >= cutoff)) continue;
       combined.push({ ...match, targetAccountId: accountId });
     }
   }
@@ -258,6 +267,50 @@ export function chooseDailyMatches(
 
 export function chooseDailyMatch(recentMatches, previousMatchId = null, randomInt = crypto.randomInt) {
   return chooseDailyMatches(recentMatches, 1, previousMatchId ? [previousMatchId] : [], randomInt)[0];
+}
+
+function dailyCandidateScore(match, dateKey, secret) {
+  return crypto
+    .createHmac('sha256', secret)
+    .update(`${dateKey}:${match.match_id}:${match.targetAccountId || 0}`)
+    .digest('hex');
+}
+
+export function orderDailyCandidates(
+  recentMatches,
+  dateKey,
+  secret,
+  excludedMatchIds = [],
+  poolSize = DEFAULT_MATCH_POOL_SIZE
+) {
+  if (!Array.isArray(recentMatches) || recentMatches.length === 0) {
+    throw new Error('У выбранных игроков нет доступных матчей до начала текущего дня.');
+  }
+
+  const unique = [...new Map(recentMatches.map((match) => [String(match.match_id), match])).values()]
+    .filter((match) => match?.match_id)
+    .slice(0, poolSize);
+  if (unique.length < MATCHES_PER_DAY) {
+    throw new Error(`Для игры требуется не менее ${MATCHES_PER_DAY} доступных матчей.`);
+  }
+
+  const excluded = new Set(excludedMatchIds.map(String));
+  const sortByDailyScore = (a, b) =>
+    dailyCandidateScore(a, dateKey, secret).localeCompare(dailyCandidateScore(b, dateKey, secret)) ||
+    String(a.match_id).localeCompare(String(b.match_id));
+
+  const preferred = unique
+    .filter((match) => !excluded.has(String(match.match_id)))
+    .sort(sortByDailyScore);
+  const fallback = unique
+    .filter((match) => excluded.has(String(match.match_id)))
+    .sort(sortByDailyScore);
+
+  return [...preferred, ...fallback];
+}
+
+function getMoscowDayStartUnix(dateKey) {
+  return Math.floor(Date.parse(`${dateKey}T00:00:00+03:00`) / 1000);
 }
 
 export class GameService {
@@ -406,16 +459,21 @@ export class GameService {
       }
     });
 
-    const combinedPool = combinePlayerMatchPools(matchLists, this.matchPoolSize);
+    const dayStartUnix = getMoscowDayStartUnix(dateKey);
+    const combinedPool = combinePlayerMatchPools(
+      matchLists,
+      this.matchPoolSize,
+      dayStartUnix
+    );
     const previous = await this.store.getPrevious(dateKey);
     const candidateCount = Math.min(12, combinedPool.length);
-    const candidates = chooseDailyMatches(
+    const candidates = orderDailyCandidates(
       combinedPool,
-      candidateCount,
+      dateKey,
+      this.appSecret,
       previousMatchIds(previous),
-      crypto.randomInt,
       this.matchPoolSize
-    );
+    ).slice(0, candidateCount);
 
     const games = [];
     let lastMatchError = null;
@@ -447,6 +505,7 @@ export class GameService {
       createdAt: new Date().toISOString(),
       poolSize: combinedPool.length,
       trackedPlayerIds: this.playerAccountIds,
+      selectionPolicy: 'moscow-day-cutoff-deterministic-v1',
       games
     };
 

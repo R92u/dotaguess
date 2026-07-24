@@ -74,7 +74,7 @@ export class OpenDotaClient {
         const response = await fetch(url, {
           headers: {
             accept: 'application/json',
-            'user-agent': 'dota-match-guess/2.2'
+            'user-agent': 'dota-match-guess/2.3'
           },
           signal: controller.signal
         });

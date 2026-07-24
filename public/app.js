@@ -290,7 +290,7 @@ function renderResult(result, dailyGame, persist = true) {
 function renderActiveGame() {
   const dailyGame = currentGame();
   if (!isValidDailyGamePayload(dailyGame)) {
-    throw new Error('Сервер вернул матч в устаревшем формате. Выполните новый деплой версии 2.2.');
+    throw new Error('Сервер вернул матч в устаревшем формате. Выполните новый деплой версии 2.3.');
   }
 
   renderPlayerChip(dailyGame.player);
@@ -442,12 +442,12 @@ async function loadGame() {
   try {
     game = await api('/api/game');
     if (
-      game?.schemaVersion !== 4 ||
+      game?.schemaVersion !== 5 ||
       !Array.isArray(game.games) ||
       game.games.length !== 2 ||
       !game.games.every(isValidDailyGamePayload)
     ) {
-      throw new Error('Сервер вернул устаревшие данные. Выполните полный деплой версии 2.2.');
+      throw new Error('Сервер вернул устаревшие данные. Выполните полный деплой версии 2.3.');
     }
     activeGameIndex = 0;
     renderActiveGame();
