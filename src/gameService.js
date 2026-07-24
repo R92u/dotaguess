@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { getMoscowDateKey, getNextMoscowMidnightIso } from './time.js';
 
-const RECORD_SCHEMA_VERSION = 2;
+const RECORD_SCHEMA_VERSION = 3;
 const MATCHES_PER_DAY = 2;
 
 const GAME_MODE_NAMES = {
@@ -145,6 +145,85 @@ function sanitizeParticipantId(value) {
   return participantId;
 }
 
+function isValidPlayer(player) {
+  return Boolean(
+    player &&
+    typeof player === 'object' &&
+    player.hero &&
+    typeof player.hero === 'object' &&
+    typeof player.hero.name === 'string' &&
+    Array.isArray(player.items) &&
+    Array.isArray(player.backpack)
+  );
+}
+
+function isValidDailyGame(game) {
+  const match = game?.match;
+  return Boolean(
+    game &&
+    Number.isInteger(Number(game.slot)) &&
+    String(game.matchId || '').length > 0 &&
+    typeof game.targetWon === 'boolean' &&
+    match &&
+    typeof match === 'object' &&
+    typeof match.gameMode === 'string' &&
+    Number.isFinite(Number(match.duration)) &&
+    Array.isArray(match.team) &&
+    match.team.length > 0 &&
+    match.team.every(isValidPlayer) &&
+    Array.isArray(match.opponents) &&
+    match.opponents.length > 0 &&
+    match.opponents.every(isValidPlayer)
+  );
+}
+
+function isValidRecord(record) {
+  return Boolean(
+    record?.schemaVersion === RECORD_SCHEMA_VERSION &&
+    record.player &&
+    typeof record.player === 'object' &&
+    Array.isArray(record.games) &&
+    record.games.length === MATCHES_PER_DAY &&
+    record.games.every(isValidDailyGame)
+  );
+}
+
+function upgradeRecord(record) {
+  if (!record || typeof record !== 'object' || !Array.isArray(record.games)) return null;
+
+  const games = record.games.map((game) => {
+    if (!game || typeof game !== 'object') return game;
+    if (game.match && typeof game.match === 'object') return game;
+
+    const hasFlatMatchShape =
+      typeof game.gameMode === 'string' &&
+      Number.isFinite(Number(game.duration)) &&
+      Array.isArray(game.team) &&
+      Array.isArray(game.opponents);
+
+    if (!hasFlatMatchShape) return game;
+    return {
+      slot: game.slot,
+      matchId: game.matchId,
+      targetWon: game.targetWon,
+      match: {
+        duration: game.duration,
+        gameMode: game.gameMode,
+        patch: game.patch ?? null,
+        team: game.team,
+        opponents: game.opponents
+      }
+    };
+  });
+
+  const upgraded = {
+    ...record,
+    schemaVersion: RECORD_SCHEMA_VERSION,
+    games
+  };
+  return isValidRecord(upgraded) ? upgraded : null;
+}
+
 export function chooseDailyMatches(
   recentMatches,
   count = MATCHES_PER_DAY,
@@ -261,12 +340,21 @@ export class GameService {
   async #getOrCreateRecord(now) {
     const dateKey = getMoscowDateKey(now);
     const existing = await this.store.get(dateKey);
-    if (
-      existing?.schemaVersion === RECORD_SCHEMA_VERSION &&
-      Array.isArray(existing.games) &&
-      existing.games.length === MATCHES_PER_DAY
-    ) {
+    if (isValidRecord(existing)) {
       return existing;
+    }
+
+    const upgraded = upgradeRecord(existing);
+    if (upgraded) {
+      console.warn(`Данные матчей за ${dateKey} обновлены до схемы ${RECORD_SCHEMA_VERSION}.`);
+      await this.store.set(dateKey, upgraded);
+      return upgraded;
+    }
+
+    if (existing) {
+      console.warn(
+        `Данные матчей за ${dateKey} повреждены или несовместимы и будут пересозданы.`
+      );
     }
 
     if (!this.pendingByDate.has(dateKey)) {
@@ -384,7 +472,12 @@ export class GameService {
   }
 
   #publicRecord(record, now) {
+    if (!isValidRecord(record)) {
+      throw new Error('Сохранённые данные матчей имеют некорректный формат.');
+    }
+
     return {
+      schemaVersion: RECORD_SCHEMA_VERSION,
       dateKey: record.dateKey,
       nextResetAt: getNextMoscowMidnightIso(now),
       player: record.player,

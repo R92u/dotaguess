@@ -37,6 +37,7 @@ let game = null;
 let activeGameIndex = 0;
 let countdownTimer = null;
 let leaderboardPollTimer = null;
+let leaderboardSource = null;
 
 const numberFormatter = new Intl.NumberFormat('ru-RU');
 const PARTICIPANT_KEY = 'dota-guess-participant-id';
@@ -136,6 +137,23 @@ function renderCard(player, side) {
 
 function currentGame() {
   return game?.games?.[activeGameIndex] || null;
+}
+
+function isValidDailyGamePayload(dailyGame) {
+  const match = dailyGame?.match;
+  return Boolean(
+    dailyGame &&
+    Number.isFinite(Number(dailyGame.slot)) &&
+    typeof dailyGame.gameToken === 'string' &&
+    match &&
+    typeof match === 'object' &&
+    typeof match.gameMode === 'string' &&
+    Number.isFinite(Number(match.duration)) &&
+    Array.isArray(match.team) &&
+    match.team.length > 0 &&
+    Array.isArray(match.opponents) &&
+    match.opponents.length > 0
+  );
 }
 
 function renderTeams(dailyGame) {
@@ -267,7 +285,9 @@ function renderResult(result, dailyGame, persist = true) {
 
 function renderActiveGame() {
   const dailyGame = currentGame();
-  if (!dailyGame) return;
+  if (!isValidDailyGamePayload(dailyGame)) {
+    throw new Error('Сервер вернул матч в устаревшем формате. Выполните новый деплой версии 2.1.');
+  }
 
   elements.gameMode.textContent = dailyGame.match.gameMode;
   elements.duration.textContent = formatDuration(dailyGame.match.duration);
@@ -371,7 +391,9 @@ function connectLeaderboard() {
     return;
   }
 
-  const source = new EventSource('/api/leaderboard/stream');
+  leaderboardSource?.close();
+  leaderboardSource = new EventSource('/api/leaderboard/stream');
+  const source = leaderboardSource;
   source.addEventListener('open', () => {
     elements.leaderboardStatus.textContent = 'Онлайн-обновление активно';
   });
@@ -394,8 +416,13 @@ async function loadGame() {
   closeDrawer();
   try {
     game = await api('/api/game');
-    if (!Array.isArray(game.games) || game.games.length !== 2) {
-      throw new Error('Сервер не вернул два матча дня. Выполните новый деплой сервиса.');
+    if (
+      game?.schemaVersion !== 3 ||
+      !Array.isArray(game.games) ||
+      game.games.length !== 2 ||
+      !game.games.every(isValidDailyGamePayload)
+    ) {
+      throw new Error('Сервер вернул устаревшие данные. Выполните полный деплой версии 2.1.');
     }
     activeGameIndex = 0;
     renderPlayerChip(game.player);
@@ -431,7 +458,10 @@ elements.drawerBackdrop.addEventListener('click', closeDrawer);
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closeDrawer();
 });
-window.addEventListener('beforeunload', () => clearInterval(leaderboardPollTimer));
+window.addEventListener('beforeunload', () => {
+  clearInterval(leaderboardPollTimer);
+  leaderboardSource?.close();
+});
 
 loadGame();
 connectLeaderboard();

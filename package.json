@@ -1,6 +1,6 @@
 {
   "name": "dota-match-guess",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "description": "Два ежедневных матча Dota 2 для угадывания результата с live-лидербордом.",
   "type": "module",

@@ -4,8 +4,8 @@ import { chooseDailyMatches, GameService } from '../src/gameService.js';
 import { normalizeItemsById } from '../src/openDota.js';
 import { getMoscowDateKey, getNextMoscowMidnightIso } from '../src/time.js';
 
-function createMemoryStore() {
-  const games = new Map();
+function createMemoryStore(initialGames = []) {
+  const games = new Map(initialGames);
   const guesses = new Map();
   const leaderboard = new Map();
   return {
@@ -139,12 +139,77 @@ test('public payload contains two games but no match ids or results', async () =
   const result = await service.getPublicGame(new Date('2026-07-24T10:00:00Z'));
   const serialized = JSON.stringify(result);
 
+  assert.equal(result.schemaVersion, 3);
   assert.equal(result.games.length, 2);
   assert.equal(result.games[0].match.team[0].isTarget, true);
   assert.equal(result.games[0].match.team[0].items[0].image, 'https://cdn.example/blink.png');
   assert.equal(serialized.includes('matchId'), false);
   assert.equal(serialized.includes('targetWon'), false);
   assert.equal(serialized.includes('radiant_win'), false);
+});
+
+
+test('cached flat two-match record is migrated without choosing new matches', async () => {
+  const dateKey = '2026-07-24';
+  const player = {
+    accountId: 123,
+    isTarget: true,
+    name: 'Old player',
+    hero: { id: 1, name: 'Anti-Mage', image: null, icon: null },
+    level: 20,
+    kills: 5,
+    deaths: 2,
+    assists: 8,
+    netWorth: 20000,
+    lastHits: 200,
+    denies: 5,
+    gpm: 500,
+    xpm: 600,
+    heroDamage: 20000,
+    towerDamage: 2000,
+    heroHealing: 0,
+    rank: 'Властелин 5',
+    lane: 'лёгкая линия',
+    items: [],
+    backpack: [],
+    neutral: null
+  };
+  const opponent = {
+    ...player,
+    accountId: 9,
+    isTarget: false,
+    name: 'Opponent',
+    hero: { id: 2, name: 'Axe', image: null, icon: null }
+  };
+  const staleRecord = {
+    schemaVersion: 2,
+    dateKey,
+    player: { accountId: 123, name: 'Old cache', avatar: null },
+    games: [1, 2].map((slot) => ({
+      slot,
+      matchId: String(slot === 1 ? 111 : 222),
+      targetWon: slot === 1,
+      gameMode: 'Turbo',
+      duration: 1800,
+      patch: '7.39',
+      team: [player],
+      opponents: [opponent]
+    }))
+  };
+  const store = createMemoryStore([[dateKey, staleRecord]]);
+  const client = {
+    async getRecentMatches() { throw new Error('migration must not fetch new matches'); },
+    async getPlayer() { throw new Error('migration must not fetch profile'); },
+    async getConstants() { throw new Error('migration must not fetch constants'); }
+  };
+  const service = new GameService({ client, store, playerAccountId: 123, appSecret: 'secret' });
+
+  const result = await service.getPublicGame(new Date('2026-07-24T10:00:00Z'));
+
+  assert.equal(result.schemaVersion, 3);
+  assert.equal(result.games.length, 2);
+  assert.equal(result.games[0].match.gameMode, 'Turbo');
+  assert.equal(result.games[0].match.team[0].hero.name, 'Anti-Mage');
 });
 
 test('repeated answer for the same participant and match is counted once', async () => {

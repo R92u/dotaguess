@@ -9,6 +9,7 @@ import { GameService } from './src/gameService.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
+const APP_VERSION = '2.1.0';
 const store = await createStore({ databaseUrl: config.databaseUrl, dataDir: config.dataDir });
 const client = new OpenDotaClient({ apiKey: config.openDotaApiKey });
 const gameService = new GameService({
@@ -123,7 +124,9 @@ async function serveStatic(req, res, pathname) {
     if (!stat.isFile()) return false;
     const data = await fs.readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
-    const cache = ['.html', '.css', '.js'].includes(ext) ? 'no-cache' : 'public, max-age=3600';
+    const cache = ['.html', '.css', '.js'].includes(ext)
+      ? 'no-store, max-age=0'
+      : 'public, max-age=3600';
     res.writeHead(200, {
       'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
       'Content-Length': data.length,
@@ -162,6 +165,7 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, {
         ok: true,
         playerAccountId: config.playerAccountId,
+        version: APP_VERSION,
         storage: config.databaseUrl ? 'postgres' : 'json'
       });
       return;
