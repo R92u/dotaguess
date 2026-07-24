@@ -3,14 +3,13 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './src/config.js';
-import { JsonStore } from './src/storage.js';
+import { createStore } from './src/createStore.js';
 import { OpenDotaClient } from './src/openDota.js';
 import { GameService } from './src/gameService.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
-const store = new JsonStore(config.dataDir);
-await store.init();
+const store = await createStore({ databaseUrl: config.databaseUrl, dataDir: config.dataDir });
 const client = new OpenDotaClient({ apiKey: config.openDotaApiKey });
 const gameService = new GameService({
   client,
@@ -31,6 +30,8 @@ const MIME_TYPES = {
 };
 
 const rateBuckets = new Map();
+const leaderboardStreams = new Set();
+
 function clientIp(req) {
   if (config.trustProxy) {
     const forwarded = req.headers['x-forwarded-for'];
@@ -72,6 +73,22 @@ function sendJson(res, status, body) {
   res.end(data);
 }
 
+function writeSse(res, event, body) {
+  res.write(`event: ${event}\ndata: ${JSON.stringify(body)}\n\n`);
+}
+
+async function broadcastLeaderboard() {
+  if (!leaderboardStreams.size) return;
+  const entries = await gameService.getLeaderboard();
+  for (const res of leaderboardStreams) {
+    try {
+      writeSse(res, 'leaderboard', { entries });
+    } catch {
+      leaderboardStreams.delete(res);
+    }
+  }
+}
+
 async function readJsonBody(req, maxBytes = 16_384) {
   let total = 0;
   const chunks = [];
@@ -106,18 +123,30 @@ async function serveStatic(req, res, pathname) {
     if (!stat.isFile()) return false;
     const data = await fs.readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
-    const cache = ext === '.html' ? 'no-cache' : 'public, max-age=3600';
+    const cache = ['.html', '.css', '.js'].includes(ext) ? 'no-cache' : 'public, max-age=3600';
     res.writeHead(200, {
       'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
       'Content-Length': data.length,
       'Cache-Control': cache
     });
-    res.end(data);
+    if (req.method === 'HEAD') res.end();
+    else res.end(data);
     return true;
   } catch {
     return false;
   }
 }
+
+const heartbeat = setInterval(() => {
+  for (const res of leaderboardStreams) {
+    try {
+      res.write(': heartbeat\n\n');
+    } catch {
+      leaderboardStreams.delete(res);
+    }
+  }
+}, 25_000);
+heartbeat.unref();
 
 const server = http.createServer(async (req, res) => {
   applySecurityHeaders(res);
@@ -130,7 +159,11 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   try {
     if (req.method === 'GET' && url.pathname === '/api/health') {
-      sendJson(res, 200, { ok: true, playerAccountId: config.playerAccountId });
+      sendJson(res, 200, {
+        ok: true,
+        playerAccountId: config.playerAccountId,
+        storage: config.databaseUrl ? 'postgres' : 'json'
+      });
       return;
     }
 
@@ -144,6 +177,26 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const result = await gameService.submitGuess(body);
       sendJson(res, 200, result);
+      await broadcastLeaderboard().catch((error) => console.error('Leaderboard broadcast:', error));
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/leaderboard') {
+      sendJson(res, 200, { entries: await gameService.getLeaderboard() });
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/leaderboard/stream') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      });
+      res.flushHeaders?.();
+      leaderboardStreams.add(res);
+      writeSse(res, 'leaderboard', { entries: await gameService.getLeaderboard() });
+      req.on('close', () => leaderboardStreams.delete(res));
       return;
     }
 
@@ -156,18 +209,26 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     const status = Number(error?.status) || 502;
     console.error(`[${new Date().toISOString()}]`, error);
-    sendJson(res, status, {
-      error:
-        status >= 500
-          ? 'Не удалось получить данные матча. Попробуйте обновить страницу позже.'
-          : error.message
-    });
+    if (!res.headersSent) {
+      sendJson(res, status, {
+        error:
+          status >= 500
+            ? 'Не удалось получить данные матча. Попробуйте обновить страницу позже.'
+            : error.message
+      });
+    } else {
+      res.end();
+    }
   }
 });
 
 server.listen(config.port, () => {
   console.log(`Dota Match Guess: http://localhost:${config.port}`);
+  console.log(`Storage: ${config.databaseUrl ? 'PostgreSQL' : config.dataDir}`);
   if (config.nodeEnv === 'production' && config.appSecret.includes('development-only')) {
     console.warn('WARNING: set a strong APP_SECRET before public deployment.');
+  }
+  if (process.env.RENDER && !config.databaseUrl && !process.env.DATA_DIR) {
+    console.warn('WARNING: Render filesystem is ephemeral. Set DATABASE_URL or attach a persistent disk.');
   }
 });

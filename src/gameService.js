@@ -1,6 +1,9 @@
 import crypto from 'node:crypto';
 import { getMoscowDateKey, getNextMoscowMidnightIso } from './time.js';
 
+const RECORD_SCHEMA_VERSION = 2;
+const MATCHES_PER_DAY = 2;
+
 const GAME_MODE_NAMES = {
   1: 'All Pick',
   2: "Captain's Mode",
@@ -107,14 +110,47 @@ function isRadiantSlot(playerSlot) {
   return asNumber(playerSlot) < 128;
 }
 
-function signToken(dateKey, matchId, secret) {
+function signToken(dateKey, slot, matchId, secret) {
   return crypto
     .createHmac('sha256', secret)
-    .update(`${dateKey}:${matchId}`)
+    .update(`${dateKey}:${slot}:${matchId}`)
     .digest('base64url');
 }
 
-export function chooseDailyMatch(recentMatches, previousMatchId = null, randomInt = crypto.randomInt) {
+function previousMatchIds(record) {
+  if (Array.isArray(record?.games)) return record.games.map((game) => String(game.matchId));
+  return record?.matchId ? [String(record.matchId)] : [];
+}
+
+function sanitizeNickname(value) {
+  const nickname = String(value ?? '')
+    .replace(/[\u0000-\u001F\u007F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (nickname.length < 2 || nickname.length > 24) {
+    const error = new Error('Имя для лидерборда должно содержать от 2 до 24 символов.');
+    error.status = 400;
+    throw error;
+  }
+  return nickname;
+}
+
+function sanitizeParticipantId(value) {
+  const participantId = String(value ?? '').trim();
+  if (!/^[A-Za-z0-9_-]{12,80}$/.test(participantId)) {
+    const error = new Error('Некорректный идентификатор участника.');
+    error.status = 400;
+    throw error;
+  }
+  return participantId;
+}
+
+export function chooseDailyMatches(
+  recentMatches,
+  count = MATCHES_PER_DAY,
+  excludedMatchIds = [],
+  randomInt = crypto.randomInt
+) {
   if (!Array.isArray(recentMatches) || recentMatches.length === 0) {
     throw new Error('У игрока нет доступных недавних матчей.');
   }
@@ -122,13 +158,26 @@ export function chooseDailyMatch(recentMatches, previousMatchId = null, randomIn
   const unique = [...new Map(recentMatches.map((match) => [String(match.match_id), match])).values()]
     .filter((match) => match.match_id)
     .slice(0, 20);
-  if (unique.length === 0) {
-    throw new Error('У игрока нет матчей с доступным идентификатором.');
+  if (unique.length < count) {
+    throw new Error(`Для игры требуется не менее ${count} доступных матчей.`);
   }
-  const candidates = unique.length > 1
-    ? unique.filter((match) => String(match.match_id) !== String(previousMatchId))
-    : unique;
-  return candidates[randomInt(candidates.length)];
+
+  const excluded = new Set(excludedMatchIds.map(String));
+  const preferred = unique.filter((match) => !excluded.has(String(match.match_id)));
+  const pool = preferred.length >= count ? [...preferred] : [...unique];
+  const selected = [];
+
+  while (selected.length < count && pool.length) {
+    const index = randomInt(pool.length);
+    selected.push(pool.splice(index, 1)[0]);
+  }
+
+  return selected;
+}
+
+// Обратная совместимость с тестами и внешними импортами первой версии.
+export function chooseDailyMatch(recentMatches, previousMatchId = null, randomInt = crypto.randomInt) {
+  return chooseDailyMatches(recentMatches, 1, previousMatchId ? [previousMatchId] : [], randomInt)[0];
 }
 
 export class GameService {
@@ -145,10 +194,14 @@ export class GameService {
     return this.#publicRecord(record, now);
   }
 
-  async submitGuess({ dateKey, token, guess }, now = new Date()) {
+  async getLeaderboard(limit = 50) {
+    return this.store.getLeaderboard(limit);
+  }
+
+  async submitGuess({ dateKey, slot, token, guess, participantId, nickname }, now = new Date()) {
     const currentDateKey = getMoscowDateKey(now);
     if (dateKey !== currentDateKey) {
-      const error = new Error('Матч дня уже сменился. Обновите страницу.');
+      const error = new Error('Матчи дня уже сменились. Обновите страницу.');
       error.status = 409;
       throw error;
     }
@@ -159,8 +212,18 @@ export class GameService {
       throw error;
     }
 
+    const numericSlot = asNumber(slot);
+    const safeParticipantId = sanitizeParticipantId(participantId);
+    const safeNickname = sanitizeNickname(nickname);
     const record = await this.#getOrCreateRecord(now);
-    const expectedToken = signToken(record.dateKey, record.matchId, this.appSecret);
+    const dailyGame = record.games.find((game) => game.slot === numericSlot);
+    if (!dailyGame) {
+      const error = new Error('Такого матча дня нет.');
+      error.status = 404;
+      throw error;
+    }
+
+    const expectedToken = signToken(record.dateKey, dailyGame.slot, dailyGame.matchId, this.appSecret);
     const supplied = Buffer.from(String(token || ''));
     const expected = Buffer.from(expectedToken);
     if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) {
@@ -169,14 +232,27 @@ export class GameService {
       throw error;
     }
 
-    const actual = record.targetWon ? 'win' : 'loss';
-    return {
-      correct: guess === actual,
+    const actual = dailyGame.targetWon ? 'win' : 'loss';
+    const submittedCorrect = guess === actual;
+    const recorded = await this.store.recordGuess({
+      participantId: safeParticipantId,
+      nickname: safeNickname,
+      dateKey: record.dateKey,
+      slot: dailyGame.slot,
+      correct: submittedCorrect,
+      guess,
       actual,
-      matchId: record.matchId,
+      matchId: dailyGame.matchId
+    });
+
+    return {
+      correct: Boolean(recorded.correct),
+      actual: recorded.actual,
+      alreadySubmitted: Boolean(recorded.alreadySubmitted),
+      matchId: dailyGame.matchId,
       links: {
-        openDota: `https://www.opendota.com/matches/${record.matchId}`,
-        stratz: `https://stratz.com/matches/${record.matchId}`,
+        openDota: `https://www.opendota.com/matches/${dailyGame.matchId}`,
+        stratz: `https://stratz.com/matches/${dailyGame.matchId}`,
         player: `https://stratz.com/players/${this.playerAccountId}`
       }
     };
@@ -185,7 +261,13 @@ export class GameService {
   async #getOrCreateRecord(now) {
     const dateKey = getMoscowDateKey(now);
     const existing = await this.store.get(dateKey);
-    if (existing) return existing;
+    if (
+      existing?.schemaVersion === RECORD_SCHEMA_VERSION &&
+      Array.isArray(existing.games) &&
+      existing.games.length === MATCHES_PER_DAY
+    ) {
+      return existing;
+    }
 
     if (!this.pendingByDate.has(dateKey)) {
       this.pendingByDate.set(
@@ -204,18 +286,72 @@ export class GameService {
     ]);
 
     const previous = await this.store.getPrevious(dateKey);
-    const selected = chooseDailyMatch(recentMatches, previous?.matchId);
-    const match = await this.client.getMatch(selected.match_id);
+    const availableCount = new Set(
+      recentMatches.filter((match) => match?.match_id).slice(0, 20).map((match) => String(match.match_id))
+    ).size;
+    const candidateCount = Math.min(6, availableCount);
+    const candidates = chooseDailyMatches(
+      recentMatches,
+      candidateCount,
+      previousMatchIds(previous)
+    );
 
+    const games = [];
+    let firstTarget = null;
+    let lastMatchError = null;
+    for (const selected of candidates) {
+      try {
+        const match = await this.client.getMatch(selected.match_id);
+        const target = this.#findTarget(match, selected);
+        const dailyGame = this.#buildDailyGame(selected, match, constants, games.length + 1);
+        games.push(dailyGame);
+        firstTarget ||= target;
+        if (games.length === MATCHES_PER_DAY) break;
+      } catch (error) {
+        lastMatchError = error;
+        console.warn(`Матч ${selected.match_id} пропущен: ${error.message}`);
+      }
+    }
+    if (games.length < MATCHES_PER_DAY) {
+      throw lastMatchError || new Error('Не удалось подготовить два матча дня.');
+    }
+
+    const record = {
+      schemaVersion: RECORD_SCHEMA_VERSION,
+      dateKey,
+      createdAt: new Date().toISOString(),
+      player: {
+        accountId: this.playerAccountId,
+        name:
+          profile?.profile?.personaname ||
+          firstTarget?.personaname ||
+          `Игрок ${this.playerAccountId}`,
+        avatar: profile?.profile?.avatarfull || profile?.profile?.avatarmedium || null
+      },
+      games
+    };
+
+    await this.store.set(dateKey, record);
+    return record;
+  }
+
+  #findTarget(match, selected) {
+    return (
+      match.players?.find(
+        (player) => Number(player.account_id) === Number(this.playerAccountId)
+      ) ||
+      match.players?.find(
+        (player) => Number(player.player_slot) === Number(selected.player_slot)
+      )
+    );
+  }
+
+  #buildDailyGame(selected, match, constants, slot) {
     if (!Array.isArray(match.players) || match.players.length < 2) {
       throw new Error('OpenDota не вернул состав выбранного матча.');
     }
 
-    const target = match.players.find(
-      (player) => Number(player.account_id) === Number(this.playerAccountId)
-    ) || match.players.find(
-      (player) => Number(player.player_slot) === Number(selected.player_slot)
-    );
+    const target = this.#findTarget(match, selected);
     if (!target) {
       throw new Error('Выбранный игрок не найден в составе матча.');
     }
@@ -233,16 +369,10 @@ export class GameService {
       else opponents.push(sanitized);
     }
 
-    const record = {
-      dateKey,
-      createdAt: new Date().toISOString(),
+    return {
+      slot,
       matchId: String(match.match_id || selected.match_id),
       targetWon,
-      player: {
-        accountId: this.playerAccountId,
-        name: profile?.profile?.personaname || target.personaname || `Игрок ${this.playerAccountId}`,
-        avatar: profile?.profile?.avatarfull || profile?.profile?.avatarmedium || null
-      },
       match: {
         duration: asNumber(match.duration || selected.duration),
         gameMode: GAME_MODE_NAMES[match.game_mode || selected.game_mode] || 'Dota 2',
@@ -251,18 +381,20 @@ export class GameService {
         opponents
       }
     };
-
-    await this.store.set(dateKey, record);
-    return record;
   }
 
   #publicRecord(record, now) {
     return {
       dateKey: record.dateKey,
       nextResetAt: getNextMoscowMidnightIso(now),
-      gameToken: signToken(record.dateKey, record.matchId, this.appSecret),
       player: record.player,
-      match: record.match
+      games: record.games.map((game) => ({
+        slot: game.slot,
+        gameToken: signToken(record.dateKey, game.slot, game.matchId, this.appSecret),
+        match: game.match
+      }))
     };
   }
 }
+
+export { MATCHES_PER_DAY, RECORD_SCHEMA_VERSION };

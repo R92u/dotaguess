@@ -1,8 +1,8 @@
 {
   "name": "dota-match-guess",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Ежедневная игра: угадайте, победил ли выбранный игрок Dota 2 в одном из 20 последних матчей.",
+  "description": "Два ежедневных матча Dota 2 для угадывания результата с live-лидербордом.",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -11,5 +11,8 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test": "node --test"
+  },
+  "dependencies": {
+    "pg": "^8.22.0"
   }
 }

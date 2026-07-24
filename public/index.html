@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#090b0e" />
     <meta
       name="description"
-      content="Угадайте, победил ли игрок в одном из своих 20 последних матчей Dota 2. Новый матч каждый день в 00:00 МСК."
+      content="Угадайте результаты двух матчей игрока Dota 2 из его последних 20 игр. Новые матчи каждый день в 00:00 МСК."
     />
     <title>Dota Guess — победа или поражение?</title>
     <link rel="stylesheet" href="/styles.css" />
@@ -20,19 +20,19 @@
         <span class="brand-mark" aria-hidden="true">D</span>
         <span>Dota Guess</span>
       </a>
-      <div class="reset-chip" title="Новый матч появляется в 00:00 по московскому времени">
+      <div class="reset-chip" title="Два новых матча появляются в 00:00 по московскому времени">
         <span class="pulse-dot"></span>
-        <span>Новый матч через</span>
+        <span>Новые матчи через</span>
         <strong id="countdown">--:--:--</strong>
       </div>
     </header>
 
     <main class="page-shell">
       <section class="hero-section">
-        <div class="eyebrow">Матч дня · один из 20 последних</div>
+        <div class="eyebrow">Два матча в день · из 20 последних</div>
         <h1>Победа или поражение?</h1>
         <p>
-          Изучите составы, статистику и предметы. Затем угадайте результат выбранного игрока.
+          Изучите составы, статистику и предметы. Угадайте исход обоих матчей выбранного игрока.
         </p>
 
         <div class="player-chip loading-skeleton" id="playerChip" aria-live="polite">
@@ -47,18 +47,29 @@
       <section class="game-panel" id="gamePanel" aria-busy="true">
         <div class="loading-state" id="loadingState">
           <div class="loader-orbit"><span></span></div>
-          <strong>Загружаем реальный матч из OpenDota</strong>
+          <strong>Загружаем реальные матчи из OpenDota</strong>
           <p>Первое открытие дня может занять несколько секунд.</p>
         </div>
 
         <div class="error-state hidden" id="errorState">
           <div class="error-icon">!</div>
-          <strong>Не удалось загрузить матч</strong>
+          <strong>Не удалось загрузить матчи</strong>
           <p id="errorText">Попробуйте ещё раз.</p>
           <button class="secondary-button" id="retryButton" type="button">Повторить</button>
         </div>
 
         <div class="game-content hidden" id="gameContent">
+          <div class="match-switcher" id="matchSwitcher" aria-label="Выбор матча">
+            <button class="match-tab active" data-match-index="0" type="button">
+              <span>Матч 1</span>
+              <small data-tab-status="0">не сыгран</small>
+            </button>
+            <button class="match-tab" data-match-index="1" type="button">
+              <span>Матч 2</span>
+              <small data-tab-status="1">не сыгран</small>
+            </button>
+          </div>
+
           <div class="match-meta">
             <div>
               <span class="meta-label">Режим</span>
@@ -106,7 +117,7 @@
           <section class="guess-section" id="guessSection">
             <div>
               <span class="meta-label">Ваш прогноз</span>
-              <h2>Чем закончился матч для выбранного игрока?</h2>
+              <h2>Чем закончился этот матч для выбранного игрока?</h2>
             </div>
             <div class="guess-buttons">
               <button class="guess-button win" data-guess="win" type="button">
@@ -136,8 +147,47 @@
       </section>
 
       <p class="footnote">
-        Нажмите на карточку героя, чтобы открыть подробную статистику и предметы. Игра обновляется ежедневно в 00:00 МСК.
+        Нажмите на карточку героя, чтобы открыть подробную статистику и предметы. Два матча обновляются ежедневно в 00:00 МСК.
       </p>
+
+      <section class="leaderboard-panel" aria-labelledby="leaderboardTitle">
+        <div class="leaderboard-header">
+          <div>
+            <span class="eyebrow">Общий зачёт · обновляется в реальном времени</span>
+            <h2 id="leaderboardTitle">Лидерборд</h2>
+            <p>За каждый правильный ответ начисляется одна победа.</p>
+          </div>
+          <label class="nickname-field">
+            <span>Ваше имя</span>
+            <input
+              id="nicknameInput"
+              type="text"
+              minlength="2"
+              maxlength="24"
+              autocomplete="nickname"
+              placeholder="Введите имя"
+            />
+            <small id="nicknameHint">Имя сохраняется в этом браузере.</small>
+          </label>
+        </div>
+
+        <div class="leaderboard-table-wrap">
+          <table class="leaderboard-table">
+            <thead>
+              <tr>
+                <th>Место</th>
+                <th>Игрок</th>
+                <th>Победы</th>
+                <th>Ответы</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboardBody">
+              <tr><td colspan="4" class="leaderboard-empty">Загрузка лидерборда…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="leaderboard-live"><span class="pulse-dot"></span><span id="leaderboardStatus">Подключение…</span></div>
+      </section>
     </main>
 
     <div class="drawer-backdrop hidden" id="drawerBackdrop"></div>

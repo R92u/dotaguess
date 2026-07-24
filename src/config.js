@@ -18,6 +18,7 @@ export const config = Object.freeze({
     process.env.APP_SECRET?.trim() ||
     'development-only-secret-change-this-before-public-deployment',
   dataDir: path.resolve(process.env.DATA_DIR || './data'),
+  databaseUrl: process.env.DATABASE_URL?.trim() || '',
   trustProxy: parseBoolean(process.env.TRUST_PROXY, false),
   nodeEnv: process.env.NODE_ENV || 'development'
 });

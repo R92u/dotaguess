@@ -1,6 +1,44 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+function emptyState() {
+  return {
+    version: 2,
+    games: {},
+    leaderboard: {},
+    guesses: {}
+  };
+}
+
+function normalizeState(value) {
+  const state = value && typeof value === 'object' ? value : {};
+  return {
+    version: 2,
+    games: state.games && typeof state.games === 'object' ? state.games : {},
+    leaderboard:
+      state.leaderboard && typeof state.leaderboard === 'object' ? state.leaderboard : {},
+    guesses: state.guesses && typeof state.guesses === 'object' ? state.guesses : {}
+  };
+}
+
+function leaderboardEntries(state, limit = 50) {
+  return Object.values(state.leaderboard || {})
+    .map((entry) => ({
+      name: entry.name,
+      wins: Number(entry.wins) || 0,
+      attempts: Number(entry.attempts) || 0,
+      updatedAt: entry.updatedAt || null
+    }))
+    .sort((a, b) =>
+      b.wins - a.wins ||
+      b.attempts - a.attempts ||
+      String(a.updatedAt || '').localeCompare(String(b.updatedAt || '')) ||
+      a.name.localeCompare(b.name, 'ru')
+    )
+    .slice(0, limit)
+    .map((entry, index) => ({ rank: index + 1, ...entry }));
+}
+
 export class JsonStore {
   constructor(directory) {
     this.directory = directory;
@@ -13,7 +51,7 @@ export class JsonStore {
     try {
       await fs.access(this.filePath);
     } catch {
-      await this.#atomicWrite({ version: 1, games: {} });
+      await this.#atomicWrite(emptyState());
     }
   }
 
@@ -22,15 +60,13 @@ export class JsonStore {
     try {
       const raw = await fs.readFile(this.filePath, 'utf8');
       const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object' || typeof parsed.games !== 'object') {
-        throw new Error('Invalid storage format');
-      }
-      return parsed;
+      if (!parsed || typeof parsed !== 'object') throw new Error('Invalid storage format');
+      return normalizeState(parsed);
     } catch (error) {
       if (error instanceof SyntaxError || error.message === 'Invalid storage format') {
         const backup = `${this.filePath}.broken-${Date.now()}`;
         await fs.rename(this.filePath, backup).catch(() => {});
-        const empty = { version: 1, games: {} };
+        const empty = emptyState();
         await this.#atomicWrite(empty);
         return empty;
       }
@@ -50,8 +86,7 @@ export class JsonStore {
   }
 
   async set(dateKey, game) {
-    this.writeQueue = this.writeQueue.then(async () => {
-      const data = await this.read();
+    return this.#mutate((data) => {
       data.games[dateKey] = game;
 
       // Храним только последние 60 дней, чтобы файл не рос бесконечно.
@@ -59,10 +94,75 @@ export class JsonStore {
       for (const oldKey of keys.slice(0, Math.max(0, keys.length - 60))) {
         delete data.games[oldKey];
       }
+    });
+  }
 
+  async recordGuess({ participantId, nickname, dateKey, slot, correct, guess, actual, matchId }) {
+    return this.#mutate((data) => {
+      const guessKey = `${dateKey}:${slot}:${participantId}`;
+      const existing = data.guesses[guessKey];
+      if (existing) {
+        return {
+          alreadySubmitted: true,
+          correct: Boolean(existing.correct),
+          guess: existing.guess,
+          actual: existing.actual
+        };
+      }
+
+      const now = new Date().toISOString();
+      const participant = data.leaderboard[participantId] || {
+        participantId,
+        name: nickname,
+        wins: 0,
+        attempts: 0,
+        createdAt: now
+      };
+      participant.name = nickname;
+      participant.attempts = (Number(participant.attempts) || 0) + 1;
+      if (correct) participant.wins = (Number(participant.wins) || 0) + 1;
+      participant.updatedAt = now;
+      data.leaderboard[participantId] = participant;
+
+      data.guesses[guessKey] = {
+        participantId,
+        nickname,
+        dateKey,
+        slot,
+        matchId,
+        guess,
+        actual,
+        correct: Boolean(correct),
+        createdAt: now
+      };
+
+      // Ограничиваем историю ответов примерно одним годом при двух матчах в день.
+      const guessKeys = Object.keys(data.guesses);
+      if (guessKeys.length > 250_000) {
+        guessKeys
+          .sort((a, b) => String(data.guesses[a].createdAt).localeCompare(String(data.guesses[b].createdAt)))
+          .slice(0, guessKeys.length - 200_000)
+          .forEach((key) => delete data.guesses[key]);
+      }
+
+      return { alreadySubmitted: false, correct: Boolean(correct), guess, actual };
+    });
+  }
+
+  async getLeaderboard(limit = 50) {
+    const data = await this.read();
+    return leaderboardEntries(data, limit);
+  }
+
+  async #mutate(mutator) {
+    let result;
+    this.writeQueue = this.writeQueue.catch(() => {}).then(async () => {
+      const data = await this.read();
+      result = mutator(data);
       await this.#atomicWrite(data);
     });
-    return this.writeQueue;
+    await this.writeQueue;
+    return result;
   }
 
   async #atomicWrite(data) {
@@ -71,3 +171,5 @@ export class JsonStore {
     await fs.rename(tmp, this.filePath);
   }
 }
+
+export { emptyState, leaderboardEntries, normalizeState };

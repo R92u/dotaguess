@@ -11,6 +11,8 @@ const elements = {
   allyTeam: document.querySelector('#allyTeam'),
   enemyTeam: document.querySelector('#enemyTeam'),
   cardTemplate: document.querySelector('#playerCardTemplate'),
+  matchTabs: [...document.querySelectorAll('.match-tab')],
+  tabStatuses: [...document.querySelectorAll('[data-tab-status]')],
   guessSection: document.querySelector('#guessSection'),
   guessButtons: [...document.querySelectorAll('.guess-button')],
   resultPanel: document.querySelector('#resultPanel'),
@@ -24,13 +26,32 @@ const elements = {
   drawer: document.querySelector('#playerDrawer'),
   drawerContent: document.querySelector('#drawerContent'),
   drawerClose: document.querySelector('#drawerClose'),
-  drawerBackdrop: document.querySelector('#drawerBackdrop')
+  drawerBackdrop: document.querySelector('#drawerBackdrop'),
+  nicknameInput: document.querySelector('#nicknameInput'),
+  nicknameHint: document.querySelector('#nicknameHint'),
+  leaderboardBody: document.querySelector('#leaderboardBody'),
+  leaderboardStatus: document.querySelector('#leaderboardStatus')
 };
 
 let game = null;
+let activeGameIndex = 0;
 let countdownTimer = null;
+let leaderboardPollTimer = null;
 
 const numberFormatter = new Intl.NumberFormat('ru-RU');
+const PARTICIPANT_KEY = 'dota-guess-participant-id';
+const NICKNAME_KEY = 'dota-guess-nickname';
+
+function getParticipantId() {
+  let value = localStorage.getItem(PARTICIPANT_KEY);
+  if (value) return value;
+  value = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2, 18)}`;
+  localStorage.setItem(PARTICIPANT_KEY, value);
+  return value;
+}
+
+const participantId = getParticipantId();
+elements.nicknameInput.value = localStorage.getItem(NICKNAME_KEY) || '';
 
 function formatDuration(seconds) {
   const total = Number(seconds) || 0;
@@ -113,14 +134,22 @@ function renderCard(player, side) {
   return fragment;
 }
 
-function renderTeams() {
-  elements.allyTeam.replaceChildren(...game.match.team.map((player) => renderCard(player, 'ally')));
-  elements.enemyTeam.replaceChildren(...game.match.opponents.map((player) => renderCard(player, 'enemy')));
+function currentGame() {
+  return game?.games?.[activeGameIndex] || null;
+}
+
+function renderTeams(dailyGame) {
+  elements.allyTeam.replaceChildren(
+    ...dailyGame.match.team.map((player) => renderCard(player, 'ally'))
+  );
+  elements.enemyTeam.replaceChildren(
+    ...dailyGame.match.opponents.map((player) => renderCard(player, 'enemy'))
+  );
 }
 
 function itemMarkup(item, emptyLabel = 'пусто') {
   if (!item) {
-    return `<div class="item-wrap"><div class="item-slot empty" aria-label="${emptyLabel}"></div><span class="item-caption">${emptyLabel}</span></div>`;
+    return `<div class="item-wrap"><div class="item-slot empty" aria-label="${escapeHtml(emptyLabel)}"></div><span class="item-caption">${escapeHtml(emptyLabel)}</span></div>`;
   }
   return `
     <div class="item-wrap" title="${escapeHtml(item.name)}">
@@ -190,12 +219,37 @@ function closeDrawer() {
   document.body.classList.remove('drawer-open');
 }
 
-function resultStorageKey(dateKey) {
-  return `dota-guess-result:${dateKey}`;
+function resultStorageKey(dateKey, slot) {
+  return `dota-guess-result:${dateKey}:${slot}`;
 }
 
-function renderResult(result, persist = true) {
-  if (persist) localStorage.setItem(resultStorageKey(game.dateKey), JSON.stringify(result));
+function getSavedResult(dailyGame) {
+  const raw = localStorage.getItem(resultStorageKey(game.dateKey, dailyGame.slot));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    localStorage.removeItem(resultStorageKey(game.dateKey, dailyGame.slot));
+    return null;
+  }
+}
+
+function renderTabStates() {
+  game.games.forEach((dailyGame, index) => {
+    const saved = getSavedResult(dailyGame);
+    const tab = elements.matchTabs[index];
+    const status = elements.tabStatuses[index];
+    tab.classList.toggle('active', index === activeGameIndex);
+    tab.classList.toggle('correct', Boolean(saved?.correct));
+    tab.classList.toggle('wrong', Boolean(saved && !saved.correct));
+    status.textContent = saved ? (saved.correct ? 'угадано' : 'ошибка') : 'не сыгран';
+  });
+}
+
+function renderResult(result, dailyGame, persist = true) {
+  if (persist) {
+    localStorage.setItem(resultStorageKey(game.dateKey, dailyGame.slot), JSON.stringify(result));
+  }
 
   elements.guessSection.classList.add('hidden');
   elements.resultPanel.classList.remove('hidden', 'correct', 'wrong');
@@ -204,19 +258,63 @@ function renderResult(result, persist = true) {
   elements.resultEyebrow.textContent = result.correct ? 'Точный прогноз' : 'Не угадали';
   elements.resultTitle.textContent = result.correct ? 'Верно!' : 'В этот раз мимо';
   const actualText = result.actual === 'win' ? 'победил' : 'проиграл';
-  elements.resultText.textContent = `Выбранный игрок ${actualText}. Завтра в 00:00 МСК появится новый матч.`;
+  const duplicateText = result.alreadySubmitted ? ' Этот ответ уже был учтён ранее.' : '';
+  elements.resultText.textContent = `Выбранный игрок ${actualText}.${duplicateText} Второй матч доступен во вкладке выше.`;
   elements.openDotaLink.href = result.links.openDota;
   elements.stratzLink.href = result.links.stratz;
+  renderTabStates();
+}
+
+function renderActiveGame() {
+  const dailyGame = currentGame();
+  if (!dailyGame) return;
+
+  elements.gameMode.textContent = dailyGame.match.gameMode;
+  elements.duration.textContent = formatDuration(dailyGame.match.duration);
+  renderTeams(dailyGame);
+  elements.resultPanel.classList.add('hidden', 'correct', 'wrong');
+  elements.guessSection.classList.remove('hidden');
+  elements.guessButtons.forEach((button) => { button.disabled = false; });
+
+  const saved = getSavedResult(dailyGame);
+  if (saved) renderResult(saved, dailyGame, false);
+  renderTabStates();
+}
+
+function validateNickname() {
+  const nickname = elements.nicknameInput.value.replace(/\s+/g, ' ').trim();
+  if (nickname.length < 2 || nickname.length > 24) {
+    elements.nicknameFieldError = true;
+    elements.nicknameInput.classList.add('invalid');
+    elements.nicknameHint.textContent = 'Введите от 2 до 24 символов, чтобы ответ попал в лидерборд.';
+    elements.nicknameInput.focus();
+    return null;
+  }
+  elements.nicknameInput.classList.remove('invalid');
+  elements.nicknameHint.textContent = 'Имя сохраняется в этом браузере.';
+  localStorage.setItem(NICKNAME_KEY, nickname);
+  return nickname;
 }
 
 async function submitGuess(guess) {
+  const nickname = validateNickname();
+  if (!nickname) return;
+
+  const dailyGame = currentGame();
   elements.guessButtons.forEach((button) => { button.disabled = true; });
   try {
     const result = await api('/api/game/guess', {
       method: 'POST',
-      body: JSON.stringify({ dateKey: game.dateKey, token: game.gameToken, guess })
+      body: JSON.stringify({
+        dateKey: game.dateKey,
+        slot: dailyGame.slot,
+        token: dailyGame.gameToken,
+        guess,
+        participantId,
+        nickname
+      })
     });
-    renderResult(result);
+    renderResult(result, dailyGame);
   } catch (error) {
     alert(error.message);
     elements.guessButtons.forEach((button) => { button.disabled = false; });
@@ -240,25 +338,69 @@ function startCountdown(nextResetAt) {
   countdownTimer = setInterval(update, 1000);
 }
 
+function renderLeaderboard(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    elements.leaderboardBody.innerHTML = '<tr><td colspan="4" class="leaderboard-empty">Пока нет ответов. Станьте первым.</td></tr>';
+    return;
+  }
+
+  elements.leaderboardBody.innerHTML = entries.map((entry) => `
+    <tr>
+      <td><span class="leaderboard-rank">${escapeHtml(entry.rank)}</span></td>
+      <td><strong>${escapeHtml(entry.name)}</strong></td>
+      <td class="leaderboard-wins">${escapeHtml(entry.wins)}</td>
+      <td>${escapeHtml(entry.attempts)}</td>
+    </tr>
+  `).join('');
+}
+
+async function loadLeaderboard() {
+  try {
+    const data = await api('/api/leaderboard');
+    renderLeaderboard(data.entries);
+    elements.leaderboardStatus.textContent = 'Лидерборд обновлён';
+  } catch {
+    elements.leaderboardStatus.textContent = 'Не удалось обновить лидерборд';
+  }
+}
+
+function connectLeaderboard() {
+  loadLeaderboard();
+  if (!('EventSource' in window)) {
+    leaderboardPollTimer = setInterval(loadLeaderboard, 10_000);
+    return;
+  }
+
+  const source = new EventSource('/api/leaderboard/stream');
+  source.addEventListener('open', () => {
+    elements.leaderboardStatus.textContent = 'Онлайн-обновление активно';
+  });
+  source.addEventListener('leaderboard', (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      renderLeaderboard(data.entries);
+      elements.leaderboardStatus.textContent = 'Онлайн-обновление активно';
+    } catch {
+      elements.leaderboardStatus.textContent = 'Получены некорректные данные';
+    }
+  });
+  source.addEventListener('error', () => {
+    elements.leaderboardStatus.textContent = 'Переподключение к лидерборду…';
+  });
+}
+
 async function loadGame() {
   setState('loading');
   closeDrawer();
   try {
     game = await api('/api/game');
-    renderPlayerChip(game.player);
-    elements.gameMode.textContent = game.match.gameMode;
-    elements.duration.textContent = formatDuration(game.match.duration);
-    renderTeams();
-    startCountdown(game.nextResetAt);
-
-    elements.resultPanel.classList.add('hidden');
-    elements.guessSection.classList.remove('hidden');
-    elements.guessButtons.forEach((button) => { button.disabled = false; });
-    const saved = localStorage.getItem(resultStorageKey(game.dateKey));
-    if (saved) {
-      try { renderResult(JSON.parse(saved), false); } catch { localStorage.removeItem(resultStorageKey(game.dateKey)); }
+    if (!Array.isArray(game.games) || game.games.length !== 2) {
+      throw new Error('Сервер не вернул два матча дня. Выполните новый деплой сервиса.');
     }
-
+    activeGameIndex = 0;
+    renderPlayerChip(game.player);
+    renderActiveGame();
+    startCountdown(game.nextResetAt);
     setState('content');
   } catch (error) {
     setState('error', error.message);
@@ -269,10 +411,27 @@ elements.retryButton.addEventListener('click', loadGame);
 elements.guessButtons.forEach((button) => {
   button.addEventListener('click', () => submitGuess(button.dataset.guess));
 });
+elements.matchTabs.forEach((tab) => {
+  tab.addEventListener('click', () => {
+    activeGameIndex = Number(tab.dataset.matchIndex) || 0;
+    closeDrawer();
+    renderActiveGame();
+  });
+});
+elements.nicknameInput.addEventListener('input', () => {
+  const value = elements.nicknameInput.value.replace(/\s+/g, ' ').trim();
+  if (value.length >= 2 && value.length <= 24) {
+    elements.nicknameInput.classList.remove('invalid');
+    elements.nicknameHint.textContent = 'Имя сохраняется в этом браузере.';
+    localStorage.setItem(NICKNAME_KEY, value);
+  }
+});
 elements.drawerClose.addEventListener('click', closeDrawer);
 elements.drawerBackdrop.addEventListener('click', closeDrawer);
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closeDrawer();
 });
+window.addEventListener('beforeunload', () => clearInterval(leaderboardPollTimer));
 
 loadGame();
+connectLeaderboard();

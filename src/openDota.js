@@ -5,6 +5,17 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export function normalizeItemsById(rawItems) {
+  const byId = {};
+  for (const [key, value] of Object.entries(rawItems || {})) {
+    if (!value || typeof value !== 'object') continue;
+    const id = Number(value.id ?? (/^\d+$/.test(key) ? key : 0));
+    if (!Number.isFinite(id) || id <= 0) continue;
+    byId[String(id)] = { ...value, key };
+  }
+  return byId;
+}
+
 export class OpenDotaClient {
   constructor({ apiKey = '', timeoutMs = 12_000 } = {}) {
     this.apiKey = apiKey;
@@ -30,12 +41,12 @@ export class OpenDotaClient {
       return this.constantsCache;
     }
 
-    const [heroes, items] = await Promise.all([
+    const [heroes, rawItems] = await Promise.all([
       this.#get('/constants/heroes'),
       this.#get('/constants/items')
     ]);
 
-    this.constantsCache = { heroes, items };
+    this.constantsCache = { heroes, items: normalizeItemsById(rawItems) };
     this.constantsExpiresAt = Date.now() + 24 * 60 * 60 * 1000;
     return this.constantsCache;
   }
@@ -58,7 +69,7 @@ export class OpenDotaClient {
         const response = await fetch(url, {
           headers: {
             accept: 'application/json',
-            'user-agent': 'dota-match-guess/1.0'
+            'user-agent': 'dota-match-guess/2.0'
           },
           signal: controller.signal
         });
