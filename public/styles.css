@@ -605,7 +605,7 @@ body.drawer-open { overflow: hidden; }
 /* Version 2: two daily matches and live leaderboard */
 .match-switcher {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 190px));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 190px));
   gap: 10px;
   padding: 18px 22px 0;
   border-bottom: 1px solid var(--line);
@@ -757,7 +757,7 @@ body.drawer-open { overflow: hidden; }
 .leaderboard-live .pulse-dot { width: 6px; height: 6px; }
 
 @media (max-width: 760px) {
-  .match-switcher { grid-template-columns: 1fr 1fr; padding: 14px 14px 0; }
+  .match-switcher { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 14px 14px 0; }
   .match-tab { padding: 0 11px; }
   .leaderboard-header { grid-template-columns: 1fr; padding: 24px 18px; }
   .leaderboard-table th,

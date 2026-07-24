@@ -1,8 +1,8 @@
 {
-  "name": "dota-match-guess",
-  "version": "2.3.0",
+  "name": "dota-match-guess-public",
+  "version": "2.5.0",
   "private": true,
-  "description": "Два ежедневных матча из 100 последних матчей четырёх игроков Dota 2 с live-лидербордом.",
+  "description": "Публичный сайт Dota Match Guess с отдельным защищённым административным API.",
   "type": "module",
   "engines": {
     "node": ">=20"

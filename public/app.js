@@ -11,8 +11,9 @@ const elements = {
   allyTeam: document.querySelector('#allyTeam'),
   enemyTeam: document.querySelector('#enemyTeam'),
   cardTemplate: document.querySelector('#playerCardTemplate'),
-  matchTabs: [...document.querySelectorAll('.match-tab')],
-  tabStatuses: [...document.querySelectorAll('[data-tab-status]')],
+  matchSwitcher: document.querySelector('#matchSwitcher'),
+  heroEyebrow: document.querySelector('#heroEyebrow'),
+  footnote: document.querySelector('#gameFootnote'),
   guessSection: document.querySelector('#guessSection'),
   guessButtons: [...document.querySelectorAll('.guess-button')],
   resultPanel: document.querySelector('#resultPanel'),
@@ -242,7 +243,7 @@ function closeDrawer() {
 }
 
 function resultStorageKey(dateKey, slot) {
-  return `dota-guess-result:${dateKey}:${slot}`;
+  return `dota-guess-result:${dateKey}:${game?.gameRevision || 'default'}:${slot}`;
 }
 
 function getSavedResult(dailyGame) {
@@ -256,11 +257,23 @@ function getSavedResult(dailyGame) {
   }
 }
 
+function buildMatchTabs() {
+  elements.matchSwitcher.innerHTML = game.games.map((dailyGame, index) => `
+    <button class="match-tab${index === activeGameIndex ? ' active' : ''}" data-match-index="${index}" type="button">
+      <span>Матч ${dailyGame.slot}</span>
+      <small data-tab-status="${index}">не сыгран</small>
+    </button>
+  `).join('');
+}
+
 function renderTabStates() {
+  const tabs = [...elements.matchSwitcher.querySelectorAll('.match-tab')];
+  const statuses = [...elements.matchSwitcher.querySelectorAll('[data-tab-status]')];
   game.games.forEach((dailyGame, index) => {
     const saved = getSavedResult(dailyGame);
-    const tab = elements.matchTabs[index];
-    const status = elements.tabStatuses[index];
+    const tab = tabs[index];
+    const status = statuses[index];
+    if (!tab || !status) return;
     tab.classList.toggle('active', index === activeGameIndex);
     tab.classList.toggle('correct', Boolean(saved?.correct));
     tab.classList.toggle('wrong', Boolean(saved && !saved.correct));
@@ -281,7 +294,8 @@ function renderResult(result, dailyGame, persist = true) {
   elements.resultTitle.textContent = result.correct ? 'Верно!' : 'В этот раз мимо';
   const actualText = result.actual === 'win' ? 'победил' : 'проиграл';
   const duplicateText = result.alreadySubmitted ? ' Этот ответ уже был учтён ранее.' : '';
-  elements.resultText.textContent = `${dailyGame.player.name} ${actualText}.${duplicateText} Второй матч доступен во вкладке выше.`;
+  const moreText = game.games.length > 1 ? ' Другие матчи доступны во вкладках выше.' : '';
+  elements.resultText.textContent = `${dailyGame.player.name} ${actualText}.${duplicateText}${moreText}`;
   elements.openDotaLink.href = result.links.openDota;
   elements.stratzLink.href = result.links.stratz;
   renderTabStates();
@@ -290,7 +304,7 @@ function renderResult(result, dailyGame, persist = true) {
 function renderActiveGame() {
   const dailyGame = currentGame();
   if (!isValidDailyGamePayload(dailyGame)) {
-    throw new Error('Сервер вернул матч в устаревшем формате. Выполните новый деплой версии 2.3.');
+    throw new Error('Сервер вернул матч в устаревшем формате. Выполните новый деплой версии 2.4.');
   }
 
   renderPlayerChip(dailyGame.player);
@@ -431,6 +445,10 @@ function connectLeaderboard() {
       elements.leaderboardStatus.textContent = 'Получены некорректные данные';
     }
   });
+  source.addEventListener('game-reset', () => {
+    elements.leaderboardStatus.textContent = 'Матчи обновлены администратором…';
+    setTimeout(() => location.reload(), 250);
+  });
   source.addEventListener('error', () => {
     elements.leaderboardStatus.textContent = 'Переподключение к лидерборду…';
   });
@@ -442,14 +460,19 @@ async function loadGame() {
   try {
     game = await api('/api/game');
     if (
-      game?.schemaVersion !== 5 ||
+      game?.schemaVersion !== 6 ||
       !Array.isArray(game.games) ||
-      game.games.length !== 2 ||
+      game.games.length < 1 ||
+      game.games.length > 10 ||
+      Number(game.matchCount) !== game.games.length ||
       !game.games.every(isValidDailyGamePayload)
     ) {
-      throw new Error('Сервер вернул устаревшие данные. Выполните полный деплой версии 2.3.');
+      throw new Error('Сервер вернул устаревшие данные. Выполните полный деплой версии 2.4.');
     }
     activeGameIndex = 0;
+    buildMatchTabs();
+    elements.heroEyebrow.textContent = `${game.games.length} ${game.games.length === 1 ? 'матч' : game.games.length < 5 ? 'матча' : 'матчей'} сегодня · пул из ${game.matchPoolSize} матчей`;
+    elements.footnote.textContent = `Нажмите на карточку героя, чтобы открыть подробную статистику и предметы. Сегодня доступно матчей: ${game.games.length}.`;
     renderActiveGame();
     startCountdown(game.nextResetAt);
     setState('content');
@@ -462,12 +485,12 @@ elements.retryButton.addEventListener('click', loadGame);
 elements.guessButtons.forEach((button) => {
   button.addEventListener('click', () => submitGuess(button.dataset.guess));
 });
-elements.matchTabs.forEach((tab) => {
-  tab.addEventListener('click', () => {
-    activeGameIndex = Number(tab.dataset.matchIndex) || 0;
-    closeDrawer();
-    renderActiveGame();
-  });
+elements.matchSwitcher.addEventListener('click', (event) => {
+  const tab = event.target.closest('.match-tab');
+  if (!tab) return;
+  activeGameIndex = Number(tab.dataset.matchIndex) || 0;
+  closeDrawer();
+  renderActiveGame();
 });
 elements.nicknameInput.addEventListener('input', () => {
   const value = elements.nicknameInput.value.replace(/\s+/g, ' ').trim();

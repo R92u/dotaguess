@@ -1,7 +1,9 @@
 {
   "version": 3,
   "games": {},
+  "dailySettings": {},
   "leaderboard": {},
   "guesses": {},
-  "leaderboardResetAt": null
+  "leaderboardResetAt": null,
+  "gameResetAt": null
 }

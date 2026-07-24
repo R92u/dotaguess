@@ -6,10 +6,10 @@
     <meta name="theme-color" content="#090b0e" />
     <meta
       name="description"
-      content="Угадайте результаты двух матчей игрока Dota 2 из 100 последних матчей выбранных игроков. Новые матчи каждый день в 00:00 МСК."
+      content="Угадайте результаты ежедневных матчей Dota 2. Количество матчей и игроки управляются через защищённую админ-панель."
     />
     <title>Dota Guess — победа или поражение?</title>
-    <link rel="stylesheet" href="/styles.css?v=2.3.0" />
+    <link rel="stylesheet" href="/styles.css?v=2.5.0" />
   </head>
   <body>
     <div class="ambient ambient-one"></div>
@@ -20,7 +20,7 @@
         <span class="brand-mark" aria-hidden="true">D</span>
         <span>Dota Guess</span>
       </a>
-      <div class="reset-chip" title="Два новых матча появляются в 00:00 по московскому времени">
+      <div class="reset-chip" title="Новые матчи появляются в 00:00 по московскому времени или после сброса администратором">
         <span class="pulse-dot"></span>
         <span>Новые матчи через</span>
         <strong id="countdown">--:--:--</strong>
@@ -29,10 +29,10 @@
 
     <main class="page-shell">
       <section class="hero-section">
-        <div class="eyebrow">Два матча в день · из 100 последних матчей четырёх игроков</div>
+        <div class="eyebrow" id="heroEyebrow">Матчи дня · загрузка настроек</div>
         <h1>Победа или поражение?</h1>
         <p>
-          Изучите составы, статистику и предметы. Каждый матч может принадлежать одному из четырёх выбранных игроков. Угадайте его исход.
+          Изучите составы, статистику и предметы. Угадайте исход каждого выбранного матча.
         </p>
 
         <div class="player-chip loading-skeleton" id="playerChip" aria-live="polite">
@@ -59,16 +59,7 @@
         </div>
 
         <div class="game-content hidden" id="gameContent">
-          <div class="match-switcher" id="matchSwitcher" aria-label="Выбор матча">
-            <button class="match-tab active" data-match-index="0" type="button">
-              <span>Матч 1</span>
-              <small data-tab-status="0">не сыгран</small>
-            </button>
-            <button class="match-tab" data-match-index="1" type="button">
-              <span>Матч 2</span>
-              <small data-tab-status="1">не сыгран</small>
-            </button>
-          </div>
+          <div class="match-switcher" id="matchSwitcher" aria-label="Выбор матча"></div>
 
           <div class="match-meta">
             <div>
@@ -146,8 +137,8 @@
         </div>
       </section>
 
-      <p class="footnote">
-        Нажмите на карточку героя, чтобы открыть подробную статистику и предметы. Два матча обновляются ежедневно в 00:00 МСК.
+      <p class="footnote" id="gameFootnote">
+        Нажмите на карточку героя, чтобы открыть подробную статистику и предметы.
       </p>
 
       <section class="leaderboard-panel" aria-labelledby="leaderboardTitle">
@@ -217,6 +208,6 @@
       </button>
     </template>
 
-    <script type="module" src="/app.js?v=2.3.0"></script>
+    <script type="module" src="/app.js?v=2.5.0"></script>
   </body>
 </html>

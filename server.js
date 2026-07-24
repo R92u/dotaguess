@@ -10,7 +10,7 @@ import { GameService } from './src/gameService.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.5.0';
 const store = await createStore({ databaseUrl: config.databaseUrl, dataDir: config.dataDir });
 const client = new OpenDotaClient({ apiKey: config.openDotaApiKey });
 const gameService = new GameService({
@@ -43,7 +43,7 @@ function clientIp(req) {
   return req.socket.remoteAddress || 'unknown';
 }
 
-function rateLimit(req, limit = 90, windowMs = 60_000) {
+function rateLimit(req, limit = 120, windowMs = 60_000) {
   const key = clientIp(req);
   const now = Date.now();
   const bucket = rateBuckets.get(key);
@@ -66,15 +66,21 @@ function applySecurityHeaders(res) {
   );
 }
 
-
 function isAuthorizedAdmin(req) {
   const authorization = String(req.headers.authorization || '');
   const suppliedSecret = authorization.startsWith('Bearer ')
     ? authorization.slice(7).trim()
     : String(req.headers['x-admin-secret'] || '').trim();
-  const expected = Buffer.from(config.adminSecret);
+  if (!config.adminApiSecret) return false;
+  const expected = Buffer.from(config.adminApiSecret);
   const supplied = Buffer.from(suppliedSecret);
   return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+}
+
+function requireAdmin(req, res) {
+  if (isAuthorizedAdmin(req)) return true;
+  sendJson(res, 403, { error: 'Неверный пароль администратора.' });
+  return false;
 }
 
 function sendJson(res, status, body) {
@@ -103,7 +109,17 @@ async function broadcastLeaderboard() {
   }
 }
 
-async function readJsonBody(req, maxBytes = 16_384) {
+function broadcastGameReset(payload) {
+  for (const res of leaderboardStreams) {
+    try {
+      writeSse(res, 'game-reset', payload);
+    } catch {
+      leaderboardStreams.delete(res);
+    }
+  }
+}
+
+async function readJsonBody(req, maxBytes = 32_768) {
   let total = 0;
   const chunks = [];
   for await (const chunk of req) {
@@ -126,7 +142,8 @@ async function readJsonBody(req, maxBytes = 16_384) {
 }
 
 async function serveStatic(req, res, pathname) {
-  const requested = pathname === '/' ? '/index.html' : pathname;
+  let requested = pathname === '/' ? '/index.html' : pathname;
+  if (requested.endsWith('/')) requested += 'index.html';
   const decoded = decodeURIComponent(requested);
   const relative = path.normalize(decoded).replace(/^(\.\.(\/|\\|$))+/, '');
   const filePath = path.resolve(publicDir, `.${relative}`);
@@ -204,11 +221,50 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/admin/state') {
+      if (!requireAdmin(req, res)) return;
+      sendJson(res, 200, await gameService.getAdminState());
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/admin/day/reset') {
+      if (!requireAdmin(req, res)) return;
+      const body = await readJsonBody(req);
+      const result = await gameService.resetToday(body);
+      sendJson(res, 200, {
+        ok: true,
+        reset: result.reset,
+        state: await gameService.getAdminState()
+      });
+      broadcastGameReset({
+        dateKey: result.game.dateKey,
+        gameRevision: result.game.gameRevision,
+        resetAt: result.reset.resetAt
+      });
+      await broadcastLeaderboard().catch((error) => console.error('Leaderboard broadcast:', error));
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/admin/leaderboard/entry') {
+      if (!requireAdmin(req, res)) return;
+      const body = await readJsonBody(req);
+      const entry = await gameService.upsertLeaderboardEntry(body);
+      sendJson(res, 200, { ok: true, entry });
+      await broadcastLeaderboard().catch((error) => console.error('Leaderboard broadcast:', error));
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/admin/leaderboard/entry/delete') {
+      if (!requireAdmin(req, res)) return;
+      const body = await readJsonBody(req);
+      const result = await gameService.deleteLeaderboardEntry(body.participantId);
+      sendJson(res, 200, { ok: true, ...result });
+      await broadcastLeaderboard().catch((error) => console.error('Leaderboard broadcast:', error));
+      return;
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/admin/leaderboard/clear') {
-      if (!isAuthorizedAdmin(req)) {
-        sendJson(res, 403, { error: 'Недостаточно прав для очистки лидерборда.' });
-        return;
-      }
+      if (!requireAdmin(req, res)) return;
       const result = await gameService.clearLeaderboard();
       sendJson(res, 200, { ok: true, entries: [], ...result });
       await broadcastLeaderboard().catch((error) => console.error('Leaderboard broadcast:', error));
@@ -242,7 +298,7 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, status, {
         error:
           status >= 500
-            ? 'Не удалось получить данные матча. Попробуйте обновить страницу позже.'
+            ? 'Не удалось выполнить запрос. Попробуйте ещё раз позже.'
             : error.message
       });
     } else {
@@ -256,6 +312,9 @@ server.listen(config.port, () => {
   console.log(`Storage: ${config.databaseUrl ? 'PostgreSQL' : config.dataDir}`);
   if (config.nodeEnv === 'production' && config.appSecret.includes('development-only')) {
     console.warn('WARNING: set a strong APP_SECRET before public deployment.');
+  }
+  if (config.nodeEnv === 'production' && !config.adminApiSecret) {
+    console.warn('WARNING: ADMIN_API_SECRET is not set. Administrative API is disabled.');
   }
   if (process.env.RENDER && !config.databaseUrl && !process.env.DATA_DIR) {
     console.warn('WARNING: Render filesystem is ephemeral. Set DATABASE_URL or attach a persistent disk.');

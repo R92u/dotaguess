@@ -35,9 +35,8 @@ export const config = Object.freeze({
   appSecret:
     process.env.APP_SECRET?.trim() ||
     'development-only-secret-change-this-before-public-deployment',
-  adminSecret:
-    process.env.ADMIN_SECRET?.trim() ||
-    'DgFCvKqN8ozA_eD6x7HtPb57G_eC2axQFLa7lnitLTc',
+  adminApiSecret:
+    process.env.ADMIN_API_SECRET?.trim() || process.env.ADMIN_SECRET?.trim() || '',
   dataDir: path.resolve(process.env.DATA_DIR || './data'),
   databaseUrl: process.env.DATABASE_URL?.trim() || '',
   trustProxy: parseBoolean(process.env.TRUST_PROXY, false),

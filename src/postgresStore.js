@@ -1,4 +1,12 @@
-import { emptyState, leaderboardEntries, normalizeState } from './storage.js';
+import {
+  adminLeaderboardEntries,
+  applyDailyReset,
+  applyLeaderboardDelete,
+  applyLeaderboardUpsert,
+  emptyState,
+  leaderboardEntries,
+  normalizeState
+} from './storage.js';
 
 export class PostgresStore {
   constructor(databaseUrl) {
@@ -55,6 +63,15 @@ export class PostgresStore {
     });
   }
 
+  async getDailySettings(dateKey) {
+    const data = await this.read();
+    return data.dailySettings[dateKey] || null;
+  }
+
+  async resetDailyGame(payload) {
+    return this.#mutate((data) => applyDailyReset(data, payload));
+  }
+
   async recordGuess({ participantId, nickname, dateKey, slot, correct, guess, actual, matchId }) {
     return this.#mutate((data) => {
       const guessKey = `${dateKey}:${slot}:${participantId}`;
@@ -109,6 +126,14 @@ export class PostgresStore {
     });
   }
 
+  async upsertLeaderboardEntry(payload) {
+    return this.#mutate((data) => applyLeaderboardUpsert(data, payload));
+  }
+
+  async deleteLeaderboardEntry(participantId) {
+    return this.#mutate((data) => applyLeaderboardDelete(data, participantId));
+  }
+
   async getLeaderboardSnapshot(limit = 50) {
     const data = await this.read();
     return {
@@ -120,6 +145,11 @@ export class PostgresStore {
   async getLeaderboard(limit = 50) {
     const data = await this.read();
     return leaderboardEntries(data, limit);
+  }
+
+  async getAdminLeaderboard(limit = 500) {
+    const data = await this.read();
+    return adminLeaderboardEntries(data, limit);
   }
 
   async #mutate(mutator) {

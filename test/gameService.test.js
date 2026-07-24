@@ -13,6 +13,7 @@ function createMemoryStore(initialGames = []) {
   const games = new Map(initialGames);
   const guesses = new Map();
   const leaderboard = new Map();
+  const dailySettings = new Map();
   return {
     async get(key) { return games.get(key) || null; },
     async getPrevious(dateKey) {
@@ -20,10 +21,31 @@ function createMemoryStore(initialGames = []) {
       return keys.length ? games.get(keys.at(-1)) : null;
     },
     async set(key, value) { games.set(key, value); },
+    async getDailySettings(key) { return dailySettings.get(key) || null; },
+    async resetDailyGame({ dateKey, matchCount, playerAccountIds }) {
+      const previous = dailySettings.get(dateKey) || { resetNonce: 0 };
+      const resetNonce = previous.resetNonce + 1;
+      const revision = `test-${resetNonce}`;
+      dailySettings.set(dateKey, {
+        matchCount, playerAccountIds, resetNonce, revision, updatedAt: new Date().toISOString()
+      });
+      games.delete(dateKey);
+      for (const [key, guess] of [...guesses.entries()]) {
+        if (guess.dateKey !== dateKey) continue;
+        guesses.delete(key);
+        const entry = leaderboard.get(guess.participantId);
+        if (entry) {
+          entry.attempts = Math.max(0, entry.attempts - 1);
+          if (guess.correct) entry.wins = Math.max(0, entry.wins - 1);
+        }
+      }
+      return { dateKey, matchCount, playerAccountIds, resetNonce, revision, resetAt: new Date().toISOString() };
+    },
     async recordGuess(payload) {
       const key = `${payload.dateKey}:${payload.slot}:${payload.participantId}`;
       if (guesses.has(key)) return { ...guesses.get(key), alreadySubmitted: true };
       const result = {
+        ...payload,
         correct: payload.correct,
         guess: payload.guess,
         actual: payload.actual,
@@ -31,6 +53,7 @@ function createMemoryStore(initialGames = []) {
       };
       guesses.set(key, result);
       const entry = leaderboard.get(payload.participantId) || {
+        participantId: payload.participantId,
         name: payload.nickname,
         wins: 0,
         attempts: 0
@@ -46,6 +69,7 @@ function createMemoryStore(initialGames = []) {
         .sort((a, b) => b.wins - a.wins || b.attempts - a.attempts)
         .map((entry, index) => ({ rank: index + 1, ...entry }));
     },
+    async getAdminLeaderboard() { return this.getLeaderboard(); },
     async getLeaderboardSnapshot() {
       return { entries: await this.getLeaderboard(), resetAt: null };
     },
@@ -55,6 +79,14 @@ function createMemoryStore(initialGames = []) {
       leaderboard.clear();
       guesses.clear();
       return { clearedParticipants, clearedGuesses, resetAt: new Date().toISOString() };
+    },
+    async upsertLeaderboardEntry(payload) {
+      const participantId = payload.participantId || 'admin_participant_123';
+      leaderboard.set(participantId, { participantId, ...payload });
+      return { participantId, ...payload };
+    },
+    async deleteLeaderboardEntry(participantId) {
+      return { deleted: leaderboard.delete(participantId), clearedGuesses: 0 };
     }
   };
 }
@@ -209,7 +241,7 @@ test('public payload contains two games from configured players without results 
   const result = await service.getPublicGame(new Date('2026-07-24T10:00:00Z'));
   const serialized = JSON.stringify(result);
 
-  assert.equal(result.schemaVersion, 5);
+  assert.equal(result.schemaVersion, 6);
   assert.equal(result.games.length, 2);
   assert.ok([123, 456].includes(result.games[0].player.accountId));
   assert.equal(result.games[0].match.team[0].isTarget, true);
@@ -253,4 +285,40 @@ test('repeated answer is counted once and admin clear resets leaderboard and gue
   const third = await service.submitGuess(payload, now);
   assert.equal(third.alreadySubmitted, false);
   assert.equal(first.correct, third.correct);
+});
+
+
+test('admin can switch today to three matches from one selected player', async () => {
+  const store = createMemoryStore();
+  const client = createClient();
+  client.getPlayerMatches = async (accountId) => Array.from({ length: 8 }, (_, index) => ({
+    match_id: accountId * 100 + index + 1,
+    player_slot: 2,
+    duration: 1800,
+    game_mode: 22,
+    start_time: 300 - index
+  }));
+  client.getMatch = async (matchId) => ({
+    match_id: matchId,
+    duration: 1800,
+    game_mode: 22,
+    radiant_win: true,
+    players: [
+      { account_id: 123, personaname: 'Player 123', player_slot: 2, hero_id: 1, item_0: 1 },
+      { account_id: 9, player_slot: 128, hero_id: 2 }
+    ]
+  });
+
+  const service = new GameService({
+    client,
+    store,
+    playerAccountIds: [123, 456],
+    matchPoolSize: 100,
+    appSecret: 'secret'
+  });
+  const now = new Date('2026-07-24T10:00:00Z');
+  const result = await service.resetToday({ matchCount: 3, playerAccountIds: [123] }, now);
+  assert.equal(result.game.games.length, 3);
+  assert.deepEqual(result.game.trackedPlayerIds, [123]);
+  assert.ok(result.game.games.every((game) => game.player.accountId === 123));
 });
