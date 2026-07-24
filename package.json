@@ -1,0 +1,15 @@
+{
+  "name": "dota-match-guess",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ежедневная игра: угадайте, победил ли выбранный игрок Dota 2 в одном из 20 последних матчей.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test"
+  }
+}

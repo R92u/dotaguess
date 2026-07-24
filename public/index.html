@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#090b0e" />
+    <meta
+      name="description"
+      content="Угадайте, победил ли игрок в одном из своих 20 последних матчей Dota 2. Новый матч каждый день в 00:00 МСК."
+    />
+    <title>Dota Guess — победа или поражение?</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Dota Guess">
+        <span class="brand-mark" aria-hidden="true">D</span>
+        <span>Dota Guess</span>
+      </a>
+      <div class="reset-chip" title="Новый матч появляется в 00:00 по московскому времени">
+        <span class="pulse-dot"></span>
+        <span>Новый матч через</span>
+        <strong id="countdown">--:--:--</strong>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      <section class="hero-section">
+        <div class="eyebrow">Матч дня · один из 20 последних</div>
+        <h1>Победа или поражение?</h1>
+        <p>
+          Изучите составы, статистику и предметы. Затем угадайте результат выбранного игрока.
+        </p>
+
+        <div class="player-chip loading-skeleton" id="playerChip" aria-live="polite">
+          <div class="player-avatar"></div>
+          <div>
+            <span class="muted">Выбранный игрок</span>
+            <strong>Загрузка профиля…</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="game-panel" id="gamePanel" aria-busy="true">
+        <div class="loading-state" id="loadingState">
+          <div class="loader-orbit"><span></span></div>
+          <strong>Загружаем реальный матч из OpenDota</strong>
+          <p>Первое открытие дня может занять несколько секунд.</p>
+        </div>
+
+        <div class="error-state hidden" id="errorState">
+          <div class="error-icon">!</div>
+          <strong>Не удалось загрузить матч</strong>
+          <p id="errorText">Попробуйте ещё раз.</p>
+          <button class="secondary-button" id="retryButton" type="button">Повторить</button>
+        </div>
+
+        <div class="game-content hidden" id="gameContent">
+          <div class="match-meta">
+            <div>
+              <span class="meta-label">Режим</span>
+              <strong id="gameMode">—</strong>
+            </div>
+            <div>
+              <span class="meta-label">Длительность</span>
+              <strong id="duration">—</strong>
+            </div>
+            <div>
+              <span class="meta-label">Источник</span>
+              <strong>OpenDota</strong>
+            </div>
+            <div class="privacy-note">
+              ID и исход матча скрыты до ответа
+            </div>
+          </div>
+
+          <div class="versus-layout">
+            <section class="team-section">
+              <div class="team-heading">
+                <span class="team-orb ally"></span>
+                <div>
+                  <span class="meta-label">Слева</span>
+                  <h2>Команда игрока</h2>
+                </div>
+              </div>
+              <div class="team-grid" id="allyTeam"></div>
+            </section>
+
+            <div class="versus-mark" aria-hidden="true"><span>VS</span></div>
+
+            <section class="team-section">
+              <div class="team-heading">
+                <span class="team-orb enemy"></span>
+                <div>
+                  <span class="meta-label">Справа</span>
+                  <h2>Соперники</h2>
+                </div>
+              </div>
+              <div class="team-grid" id="enemyTeam"></div>
+            </section>
+          </div>
+
+          <section class="guess-section" id="guessSection">
+            <div>
+              <span class="meta-label">Ваш прогноз</span>
+              <h2>Чем закончился матч для выбранного игрока?</h2>
+            </div>
+            <div class="guess-buttons">
+              <button class="guess-button win" data-guess="win" type="button">
+                <span class="guess-icon">↑</span>
+                Победа
+              </button>
+              <button class="guess-button loss" data-guess="loss" type="button">
+                <span class="guess-icon">↓</span>
+                Поражение
+              </button>
+            </div>
+          </section>
+
+          <section class="result-panel hidden" id="resultPanel" aria-live="polite">
+            <div class="result-symbol" id="resultSymbol">✓</div>
+            <div class="result-copy">
+              <span class="meta-label" id="resultEyebrow">Результат</span>
+              <h2 id="resultTitle">Верно!</h2>
+              <p id="resultText"></p>
+            </div>
+            <div class="result-links">
+              <a id="openDotaLink" href="#" target="_blank" rel="noreferrer">Открыть в OpenDota</a>
+              <a id="stratzLink" href="#" target="_blank" rel="noreferrer">Открыть в STRATZ</a>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <p class="footnote">
+        Нажмите на карточку героя, чтобы открыть подробную статистику и предметы. Игра обновляется ежедневно в 00:00 МСК.
+      </p>
+    </main>
+
+    <div class="drawer-backdrop hidden" id="drawerBackdrop"></div>
+    <aside class="player-drawer" id="playerDrawer" aria-hidden="true" aria-label="Подробности игрока">
+      <button class="drawer-close" id="drawerClose" type="button" aria-label="Закрыть">×</button>
+      <div id="drawerContent"></div>
+    </aside>
+
+    <template id="playerCardTemplate">
+      <button class="player-card" type="button">
+        <div class="hero-art-wrap">
+          <img class="hero-art" alt="" loading="lazy" />
+          <span class="target-badge hidden">Игрок дня</span>
+          <span class="level-badge"></span>
+        </div>
+        <div class="card-body">
+          <strong class="hero-name"></strong>
+          <span class="player-name"></span>
+          <div class="kda-row">
+            <span class="kills"></span><i>/</i><span class="deaths"></span><i>/</i><span class="assists"></span>
+          </div>
+          <div class="card-bottom">
+            <span class="net-worth"></span>
+            <span class="rank"></span>
+          </div>
+        </div>
+      </button>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
