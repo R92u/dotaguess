@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
 import { getMoscowDateKey, getNextMoscowMidnightIso } from './time.js';
 
-const RECORD_SCHEMA_VERSION = 3;
+const RECORD_SCHEMA_VERSION = 4;
 const MATCHES_PER_DAY = 2;
+const DEFAULT_MATCH_POOL_SIZE = 100;
 
 const GAME_MODE_NAMES = {
   1: 'All Pick',
@@ -110,10 +111,10 @@ function isRadiantSlot(playerSlot) {
   return asNumber(playerSlot) < 128;
 }
 
-function signToken(dateKey, slot, matchId, secret) {
+function signToken(dateKey, slot, matchId, targetAccountId, secret) {
   return crypto
     .createHmac('sha256', secret)
-    .update(`${dateKey}:${slot}:${matchId}`)
+    .update(`${dateKey}:${slot}:${matchId}:${targetAccountId}`)
     .digest('base64url');
 }
 
@@ -157,6 +158,15 @@ function isValidPlayer(player) {
   );
 }
 
+function isValidTargetPlayer(player) {
+  return Boolean(
+    player &&
+    typeof player === 'object' &&
+    Number.isFinite(Number(player.accountId)) &&
+    typeof player.name === 'string'
+  );
+}
+
 function isValidDailyGame(game) {
   const match = game?.match;
   return Boolean(
@@ -164,6 +174,7 @@ function isValidDailyGame(game) {
     Number.isInteger(Number(game.slot)) &&
     String(game.matchId || '').length > 0 &&
     typeof game.targetWon === 'boolean' &&
+    isValidTargetPlayer(game.player) &&
     match &&
     typeof match === 'object' &&
     typeof match.gameMode === 'string' &&
@@ -180,63 +191,54 @@ function isValidDailyGame(game) {
 function isValidRecord(record) {
   return Boolean(
     record?.schemaVersion === RECORD_SCHEMA_VERSION &&
-    record.player &&
-    typeof record.player === 'object' &&
     Array.isArray(record.games) &&
     record.games.length === MATCHES_PER_DAY &&
     record.games.every(isValidDailyGame)
   );
 }
 
-function upgradeRecord(record) {
-  if (!record || typeof record !== 'object' || !Array.isArray(record.games)) return null;
+export function combinePlayerMatchPools(matchLists, poolSize = DEFAULT_MATCH_POOL_SIZE) {
+  const combined = [];
+  for (const entry of matchLists || []) {
+    const accountId = Number(entry?.accountId);
+    if (!accountId || !Array.isArray(entry?.matches)) continue;
+    for (const match of entry.matches) {
+      if (!match?.match_id) continue;
+      combined.push({ ...match, targetAccountId: accountId });
+    }
+  }
 
-  const games = record.games.map((game) => {
-    if (!game || typeof game !== 'object') return game;
-    if (game.match && typeof game.match === 'object') return game;
+  combined.sort((a, b) =>
+    asNumber(b.start_time) - asNumber(a.start_time) ||
+    asNumber(b.match_id) - asNumber(a.match_id)
+  );
 
-    const hasFlatMatchShape =
-      typeof game.gameMode === 'string' &&
-      Number.isFinite(Number(game.duration)) &&
-      Array.isArray(game.team) &&
-      Array.isArray(game.opponents);
-
-    if (!hasFlatMatchShape) return game;
-    return {
-      slot: game.slot,
-      matchId: game.matchId,
-      targetWon: game.targetWon,
-      match: {
-        duration: game.duration,
-        gameMode: game.gameMode,
-        patch: game.patch ?? null,
-        team: game.team,
-        opponents: game.opponents
-      }
-    };
-  });
-
-  const upgraded = {
-    ...record,
-    schemaVersion: RECORD_SCHEMA_VERSION,
-    games
-  };
-  return isValidRecord(upgraded) ? upgraded : null;
+  const unique = [];
+  const seen = new Set();
+  for (const match of combined) {
+    const key = String(match.match_id);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(match);
+    if (unique.length >= poolSize) break;
+  }
+  return unique;
 }
 
 export function chooseDailyMatches(
   recentMatches,
   count = MATCHES_PER_DAY,
   excludedMatchIds = [],
-  randomInt = crypto.randomInt
+  randomInt = crypto.randomInt,
+  poolSize = DEFAULT_MATCH_POOL_SIZE
 ) {
   if (!Array.isArray(recentMatches) || recentMatches.length === 0) {
-    throw new Error('У игрока нет доступных недавних матчей.');
+    throw new Error('У выбранных игроков нет доступных матчей.');
   }
 
   const unique = [...new Map(recentMatches.map((match) => [String(match.match_id), match])).values()]
     .filter((match) => match.match_id)
-    .slice(0, 20);
+    .slice(0, poolSize);
   if (unique.length < count) {
     throw new Error(`Для игры требуется не менее ${count} доступных матчей.`);
   }
@@ -254,16 +256,20 @@ export function chooseDailyMatches(
   return selected;
 }
 
-// Обратная совместимость с тестами и внешними импортами первой версии.
 export function chooseDailyMatch(recentMatches, previousMatchId = null, randomInt = crypto.randomInt) {
   return chooseDailyMatches(recentMatches, 1, previousMatchId ? [previousMatchId] : [], randomInt)[0];
 }
 
 export class GameService {
-  constructor({ client, store, playerAccountId, appSecret }) {
+  constructor({ client, store, playerAccountIds, playerAccountId, matchPoolSize, appSecret }) {
     this.client = client;
     this.store = store;
-    this.playerAccountId = playerAccountId;
+    this.playerAccountIds = [...new Set(
+      (playerAccountIds?.length ? playerAccountIds : [playerAccountId])
+        .map(Number)
+        .filter((value) => Number.isFinite(value) && value > 0)
+    )];
+    this.matchPoolSize = Math.max(2, Number(matchPoolSize) || DEFAULT_MATCH_POOL_SIZE);
     this.appSecret = appSecret;
     this.pendingByDate = new Map();
   }
@@ -275,6 +281,14 @@ export class GameService {
 
   async getLeaderboard(limit = 50) {
     return this.store.getLeaderboard(limit);
+  }
+
+  async getLeaderboardSnapshot(limit = 50) {
+    return this.store.getLeaderboardSnapshot(limit);
+  }
+
+  async clearLeaderboard() {
+    return this.store.clearLeaderboard();
   }
 
   async submitGuess({ dateKey, slot, token, guess, participantId, nickname }, now = new Date()) {
@@ -302,7 +316,13 @@ export class GameService {
       throw error;
     }
 
-    const expectedToken = signToken(record.dateKey, dailyGame.slot, dailyGame.matchId, this.appSecret);
+    const expectedToken = signToken(
+      record.dateKey,
+      dailyGame.slot,
+      dailyGame.matchId,
+      dailyGame.player.accountId,
+      this.appSecret
+    );
     const supplied = Buffer.from(String(token || ''));
     const expected = Buffer.from(expectedToken);
     if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) {
@@ -329,10 +349,11 @@ export class GameService {
       actual: recorded.actual,
       alreadySubmitted: Boolean(recorded.alreadySubmitted),
       matchId: dailyGame.matchId,
+      player: dailyGame.player,
       links: {
         openDota: `https://www.opendota.com/matches/${dailyGame.matchId}`,
         stratz: `https://stratz.com/matches/${dailyGame.matchId}`,
-        player: `https://stratz.com/players/${this.playerAccountId}`
+        player: `https://stratz.com/players/${dailyGame.player.accountId}`
       }
     };
   }
@@ -340,21 +361,10 @@ export class GameService {
   async #getOrCreateRecord(now) {
     const dateKey = getMoscowDateKey(now);
     const existing = await this.store.get(dateKey);
-    if (isValidRecord(existing)) {
-      return existing;
-    }
-
-    const upgraded = upgradeRecord(existing);
-    if (upgraded) {
-      console.warn(`Данные матчей за ${dateKey} обновлены до схемы ${RECORD_SCHEMA_VERSION}.`);
-      await this.store.set(dateKey, upgraded);
-      return upgraded;
-    }
+    if (isValidRecord(existing)) return existing;
 
     if (existing) {
-      console.warn(
-        `Данные матчей за ${dateKey} повреждены или несовместимы и будут пересозданы.`
-      );
+      console.warn(`Данные матчей за ${dateKey} относятся к старой версии и будут пересозданы.`);
     }
 
     if (!this.pendingByDate.has(dateKey)) {
@@ -367,33 +377,60 @@ export class GameService {
   }
 
   async #createRecord(dateKey) {
-    const [recentMatches, profile, constants] = await Promise.all([
-      this.client.getRecentMatches(this.playerAccountId),
-      this.client.getPlayer(this.playerAccountId),
-      this.client.getConstants()
+    if (!this.playerAccountIds.length) {
+      throw new Error('Не указаны Dota account ID игроков.');
+    }
+
+    const [constants, profileResults, matchResults] = await Promise.all([
+      this.client.getConstants(),
+      Promise.allSettled(this.playerAccountIds.map((accountId) => this.client.getPlayer(accountId))),
+      Promise.allSettled(
+        this.playerAccountIds.map((accountId) =>
+          this.client.getPlayerMatches(accountId, this.matchPoolSize)
+        )
+      )
     ]);
 
+    const profiles = new Map();
+    const matchLists = [];
+    this.playerAccountIds.forEach((accountId, index) => {
+      const profileResult = profileResults[index];
+      const matchResult = matchResults[index];
+      if (profileResult?.status === 'fulfilled') profiles.set(accountId, profileResult.value);
+      else console.warn(`Профиль ${accountId} недоступен: ${profileResult?.reason?.message || 'ошибка'}`);
+
+      if (matchResult?.status === 'fulfilled' && Array.isArray(matchResult.value)) {
+        matchLists.push({ accountId, matches: matchResult.value });
+      } else {
+        console.warn(`Матчи ${accountId} недоступны: ${matchResult?.reason?.message || 'ошибка'}`);
+      }
+    });
+
+    const combinedPool = combinePlayerMatchPools(matchLists, this.matchPoolSize);
     const previous = await this.store.getPrevious(dateKey);
-    const availableCount = new Set(
-      recentMatches.filter((match) => match?.match_id).slice(0, 20).map((match) => String(match.match_id))
-    ).size;
-    const candidateCount = Math.min(6, availableCount);
+    const candidateCount = Math.min(12, combinedPool.length);
     const candidates = chooseDailyMatches(
-      recentMatches,
+      combinedPool,
       candidateCount,
-      previousMatchIds(previous)
+      previousMatchIds(previous),
+      crypto.randomInt,
+      this.matchPoolSize
     );
 
     const games = [];
-    let firstTarget = null;
     let lastMatchError = null;
     for (const selected of candidates) {
       try {
         const match = await this.client.getMatch(selected.match_id);
-        const target = this.#findTarget(match, selected);
-        const dailyGame = this.#buildDailyGame(selected, match, constants, games.length + 1);
+        const profile = profiles.get(Number(selected.targetAccountId));
+        const dailyGame = this.#buildDailyGame(
+          selected,
+          match,
+          constants,
+          profile,
+          games.length + 1
+        );
         games.push(dailyGame);
-        firstTarget ||= target;
         if (games.length === MATCHES_PER_DAY) break;
       } catch (error) {
         lastMatchError = error;
@@ -408,14 +445,8 @@ export class GameService {
       schemaVersion: RECORD_SCHEMA_VERSION,
       dateKey,
       createdAt: new Date().toISOString(),
-      player: {
-        accountId: this.playerAccountId,
-        name:
-          profile?.profile?.personaname ||
-          firstTarget?.personaname ||
-          `Игрок ${this.playerAccountId}`,
-        avatar: profile?.profile?.avatarfull || profile?.profile?.avatarmedium || null
-      },
+      poolSize: combinedPool.length,
+      trackedPlayerIds: this.playerAccountIds,
       games
     };
 
@@ -424,26 +455,22 @@ export class GameService {
   }
 
   #findTarget(match, selected) {
+    const targetAccountId = Number(selected.targetAccountId);
     return (
-      match.players?.find(
-        (player) => Number(player.account_id) === Number(this.playerAccountId)
-      ) ||
-      match.players?.find(
-        (player) => Number(player.player_slot) === Number(selected.player_slot)
-      )
+      match.players?.find((player) => Number(player.account_id) === targetAccountId) ||
+      match.players?.find((player) => Number(player.player_slot) === Number(selected.player_slot))
     );
   }
 
-  #buildDailyGame(selected, match, constants, slot) {
+  #buildDailyGame(selected, match, constants, profile, slot) {
     if (!Array.isArray(match.players) || match.players.length < 2) {
       throw new Error('OpenDota не вернул состав выбранного матча.');
     }
 
     const target = this.#findTarget(match, selected);
-    if (!target) {
-      throw new Error('Выбранный игрок не найден в составе матча.');
-    }
+    if (!target) throw new Error('Выбранный игрок не найден в составе матча.');
 
+    const targetAccountId = Number(selected.targetAccountId || target.account_id);
     const targetRadiant = isRadiantSlot(target.player_slot);
     const radiantWon = match.radiant_win === true || match.radiant_win === 1;
     const targetWon = targetRadiant === radiantWon;
@@ -451,7 +478,7 @@ export class GameService {
     const opponents = [];
 
     for (const player of match.players) {
-      const isTarget = player === target || Number(player.player_slot) === Number(target.player_slot);
+      const isTarget = Number(player.account_id) === targetAccountId || player === target;
       const sanitized = sanitizePlayer(player, constants, this.client, isTarget);
       if (isRadiantSlot(player.player_slot) === targetRadiant) team.push(sanitized);
       else opponents.push(sanitized);
@@ -461,6 +488,14 @@ export class GameService {
       slot,
       matchId: String(match.match_id || selected.match_id),
       targetWon,
+      player: {
+        accountId: targetAccountId,
+        name:
+          profile?.profile?.personaname ||
+          target?.personaname ||
+          `Игрок ${targetAccountId}`,
+        avatar: profile?.profile?.avatarfull || profile?.profile?.avatarmedium || null
+      },
       match: {
         duration: asNumber(match.duration || selected.duration),
         gameMode: GAME_MODE_NAMES[match.game_mode || selected.game_mode] || 'Dota 2',
@@ -480,14 +515,22 @@ export class GameService {
       schemaVersion: RECORD_SCHEMA_VERSION,
       dateKey: record.dateKey,
       nextResetAt: getNextMoscowMidnightIso(now),
-      player: record.player,
+      matchPoolSize: record.poolSize || this.matchPoolSize,
+      trackedPlayerIds: record.trackedPlayerIds || this.playerAccountIds,
       games: record.games.map((game) => ({
         slot: game.slot,
-        gameToken: signToken(record.dateKey, game.slot, game.matchId, this.appSecret),
+        gameToken: signToken(
+          record.dateKey,
+          game.slot,
+          game.matchId,
+          game.player.accountId,
+          this.appSecret
+        ),
+        player: game.player,
         match: game.match
       }))
     };
   }
 }
 
-export { MATCHES_PER_DAY, RECORD_SCHEMA_VERSION };
+export { DEFAULT_MATCH_POOL_SIZE, MATCHES_PER_DAY, RECORD_SCHEMA_VERSION };

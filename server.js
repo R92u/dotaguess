@@ -1,4 +1,5 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,13 +10,14 @@ import { GameService } from './src/gameService.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.2.0';
 const store = await createStore({ databaseUrl: config.databaseUrl, dataDir: config.dataDir });
 const client = new OpenDotaClient({ apiKey: config.openDotaApiKey });
 const gameService = new GameService({
   client,
   store,
-  playerAccountId: config.playerAccountId,
+  playerAccountIds: config.playerAccountIds,
+  matchPoolSize: config.matchPoolSize,
   appSecret: config.appSecret
 });
 
@@ -64,6 +66,17 @@ function applySecurityHeaders(res) {
   );
 }
 
+
+function isAuthorizedAdmin(req) {
+  const authorization = String(req.headers.authorization || '');
+  const suppliedSecret = authorization.startsWith('Bearer ')
+    ? authorization.slice(7).trim()
+    : String(req.headers['x-admin-secret'] || '').trim();
+  const expected = Buffer.from(config.adminSecret);
+  const supplied = Buffer.from(suppliedSecret);
+  return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+}
+
 function sendJson(res, status, body) {
   const data = JSON.stringify(body);
   res.writeHead(status, {
@@ -80,10 +93,10 @@ function writeSse(res, event, body) {
 
 async function broadcastLeaderboard() {
   if (!leaderboardStreams.size) return;
-  const entries = await gameService.getLeaderboard();
+  const snapshot = await gameService.getLeaderboardSnapshot();
   for (const res of leaderboardStreams) {
     try {
-      writeSse(res, 'leaderboard', { entries });
+      writeSse(res, 'leaderboard', snapshot);
     } catch {
       leaderboardStreams.delete(res);
     }
@@ -164,7 +177,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/health') {
       sendJson(res, 200, {
         ok: true,
-        playerAccountId: config.playerAccountId,
+        playerAccountIds: config.playerAccountIds,
+        matchPoolSize: config.matchPoolSize,
         version: APP_VERSION,
         storage: config.databaseUrl ? 'postgres' : 'json'
       });
@@ -186,7 +200,18 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && url.pathname === '/api/leaderboard') {
-      sendJson(res, 200, { entries: await gameService.getLeaderboard() });
+      sendJson(res, 200, await gameService.getLeaderboardSnapshot());
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/admin/leaderboard/clear') {
+      if (!isAuthorizedAdmin(req)) {
+        sendJson(res, 403, { error: 'Недостаточно прав для очистки лидерборда.' });
+        return;
+      }
+      const result = await gameService.clearLeaderboard();
+      sendJson(res, 200, { ok: true, entries: [], ...result });
+      await broadcastLeaderboard().catch((error) => console.error('Leaderboard broadcast:', error));
       return;
     }
 
@@ -199,7 +224,7 @@ const server = http.createServer(async (req, res) => {
       });
       res.flushHeaders?.();
       leaderboardStreams.add(res);
-      writeSse(res, 'leaderboard', { entries: await gameService.getLeaderboard() });
+      writeSse(res, 'leaderboard', await gameService.getLeaderboardSnapshot());
       req.on('close', () => leaderboardStreams.delete(res));
       return;
     }

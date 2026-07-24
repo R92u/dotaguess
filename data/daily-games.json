@@ -1,6 +1,7 @@
 {
-  "version": 2,
+  "version": 3,
   "games": {},
   "leaderboard": {},
-  "guesses": {}
+  "guesses": {},
+  "leaderboardResetAt": null
 }

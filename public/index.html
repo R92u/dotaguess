@@ -6,10 +6,10 @@
     <meta name="theme-color" content="#090b0e" />
     <meta
       name="description"
-      content="Угадайте результаты двух матчей игрока Dota 2 из его последних 20 игр. Новые матчи каждый день в 00:00 МСК."
+      content="Угадайте результаты двух матчей игрока Dota 2 из 100 последних матчей выбранных игроков. Новые матчи каждый день в 00:00 МСК."
     />
     <title>Dota Guess — победа или поражение?</title>
-    <link rel="stylesheet" href="/styles.css?v=2.1.0" />
+    <link rel="stylesheet" href="/styles.css?v=2.2.0" />
   </head>
   <body>
     <div class="ambient ambient-one"></div>
@@ -29,10 +29,10 @@
 
     <main class="page-shell">
       <section class="hero-section">
-        <div class="eyebrow">Два матча в день · из 20 последних</div>
+        <div class="eyebrow">Два матча в день · из 100 последних матчей четырёх игроков</div>
         <h1>Победа или поражение?</h1>
         <p>
-          Изучите составы, статистику и предметы. Угадайте исход обоих матчей выбранного игрока.
+          Изучите составы, статистику и предметы. Каждый матч может принадлежать одному из четырёх выбранных игроков. Угадайте его исход.
         </p>
 
         <div class="player-chip loading-skeleton" id="playerChip" aria-live="polite">
@@ -217,6 +217,6 @@
       </button>
     </template>
 
-    <script type="module" src="/app.js?v=2.1.0"></script>
+    <script type="module" src="/app.js?v=2.2.0"></script>
   </body>
 </html>

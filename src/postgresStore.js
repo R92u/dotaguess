@@ -98,6 +98,25 @@ export class PostgresStore {
     });
   }
 
+  async clearLeaderboard() {
+    return this.#mutate((data) => {
+      const clearedParticipants = Object.keys(data.leaderboard || {}).length;
+      const clearedGuesses = Object.keys(data.guesses || {}).length;
+      data.leaderboard = {};
+      data.guesses = {};
+      data.leaderboardResetAt = new Date().toISOString();
+      return { clearedParticipants, clearedGuesses, resetAt: data.leaderboardResetAt };
+    });
+  }
+
+  async getLeaderboardSnapshot(limit = 50) {
+    const data = await this.read();
+    return {
+      entries: leaderboardEntries(data, limit),
+      resetAt: data.leaderboardResetAt || null
+    };
+  }
+
   async getLeaderboard(limit = 50) {
     const data = await this.read();
     return leaderboardEntries(data, limit);

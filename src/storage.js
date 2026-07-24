@@ -6,7 +6,8 @@ function emptyState() {
     version: 2,
     games: {},
     leaderboard: {},
-    guesses: {}
+    guesses: {},
+    leaderboardResetAt: null
   };
 }
 
@@ -17,7 +18,8 @@ function normalizeState(value) {
     games: state.games && typeof state.games === 'object' ? state.games : {},
     leaderboard:
       state.leaderboard && typeof state.leaderboard === 'object' ? state.leaderboard : {},
-    guesses: state.guesses && typeof state.guesses === 'object' ? state.guesses : {}
+    guesses: state.guesses && typeof state.guesses === 'object' ? state.guesses : {},
+    leaderboardResetAt: state.leaderboardResetAt || null
   };
 }
 
@@ -147,6 +149,25 @@ export class JsonStore {
 
       return { alreadySubmitted: false, correct: Boolean(correct), guess, actual };
     });
+  }
+
+  async clearLeaderboard() {
+    return this.#mutate((data) => {
+      const clearedParticipants = Object.keys(data.leaderboard || {}).length;
+      const clearedGuesses = Object.keys(data.guesses || {}).length;
+      data.leaderboard = {};
+      data.guesses = {};
+      data.leaderboardResetAt = new Date().toISOString();
+      return { clearedParticipants, clearedGuesses, resetAt: data.leaderboardResetAt };
+    });
+  }
+
+  async getLeaderboardSnapshot(limit = 50) {
+    const data = await this.read();
+    return {
+      entries: leaderboardEntries(data, limit),
+      resetAt: data.leaderboardResetAt || null
+    };
   }
 
   async getLeaderboard(limit = 50) {

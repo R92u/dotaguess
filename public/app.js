@@ -42,6 +42,7 @@ let leaderboardSource = null;
 const numberFormatter = new Intl.NumberFormat('ru-RU');
 const PARTICIPANT_KEY = 'dota-guess-participant-id';
 const NICKNAME_KEY = 'dota-guess-nickname';
+const LEADERBOARD_RESET_KEY = 'dota-guess-leaderboard-reset-at';
 
 function getParticipantId() {
   let value = localStorage.getItem(PARTICIPANT_KEY);
@@ -145,6 +146,9 @@ function isValidDailyGamePayload(dailyGame) {
     dailyGame &&
     Number.isFinite(Number(dailyGame.slot)) &&
     typeof dailyGame.gameToken === 'string' &&
+    dailyGame.player &&
+    Number.isFinite(Number(dailyGame.player.accountId)) &&
+    typeof dailyGame.player.name === 'string' &&
     match &&
     typeof match === 'object' &&
     typeof match.gameMode === 'string' &&
@@ -277,7 +281,7 @@ function renderResult(result, dailyGame, persist = true) {
   elements.resultTitle.textContent = result.correct ? 'Верно!' : 'В этот раз мимо';
   const actualText = result.actual === 'win' ? 'победил' : 'проиграл';
   const duplicateText = result.alreadySubmitted ? ' Этот ответ уже был учтён ранее.' : '';
-  elements.resultText.textContent = `Выбранный игрок ${actualText}.${duplicateText} Второй матч доступен во вкладке выше.`;
+  elements.resultText.textContent = `${dailyGame.player.name} ${actualText}.${duplicateText} Второй матч доступен во вкладке выше.`;
   elements.openDotaLink.href = result.links.openDota;
   elements.stratzLink.href = result.links.stratz;
   renderTabStates();
@@ -286,9 +290,10 @@ function renderResult(result, dailyGame, persist = true) {
 function renderActiveGame() {
   const dailyGame = currentGame();
   if (!isValidDailyGamePayload(dailyGame)) {
-    throw new Error('Сервер вернул матч в устаревшем формате. Выполните новый деплой версии 2.1.');
+    throw new Error('Сервер вернул матч в устаревшем формате. Выполните новый деплой версии 2.2.');
   }
 
+  renderPlayerChip(dailyGame.player);
   elements.gameMode.textContent = dailyGame.match.gameMode;
   elements.duration.textContent = formatDuration(dailyGame.match.duration);
   renderTeams(dailyGame);
@@ -358,6 +363,26 @@ function startCountdown(nextResetAt) {
   countdownTimer = setInterval(update, 1000);
 }
 
+function clearSavedMatchResults() {
+  const keys = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (key?.startsWith('dota-guess-result:')) keys.push(key);
+  }
+  keys.forEach((key) => localStorage.removeItem(key));
+}
+
+function handleLeaderboardPayload(payload) {
+  const resetAt = payload?.resetAt || null;
+  const knownResetAt = localStorage.getItem(LEADERBOARD_RESET_KEY);
+  if (resetAt && resetAt !== knownResetAt) {
+    clearSavedMatchResults();
+    localStorage.setItem(LEADERBOARD_RESET_KEY, resetAt);
+    if (game) renderActiveGame();
+  }
+  renderLeaderboard(payload?.entries || []);
+}
+
 function renderLeaderboard(entries) {
   if (!Array.isArray(entries) || entries.length === 0) {
     elements.leaderboardBody.innerHTML = '<tr><td colspan="4" class="leaderboard-empty">Пока нет ответов. Станьте первым.</td></tr>';
@@ -377,7 +402,7 @@ function renderLeaderboard(entries) {
 async function loadLeaderboard() {
   try {
     const data = await api('/api/leaderboard');
-    renderLeaderboard(data.entries);
+    handleLeaderboardPayload(data);
     elements.leaderboardStatus.textContent = 'Лидерборд обновлён';
   } catch {
     elements.leaderboardStatus.textContent = 'Не удалось обновить лидерборд';
@@ -400,7 +425,7 @@ function connectLeaderboard() {
   source.addEventListener('leaderboard', (event) => {
     try {
       const data = JSON.parse(event.data);
-      renderLeaderboard(data.entries);
+      handleLeaderboardPayload(data);
       elements.leaderboardStatus.textContent = 'Онлайн-обновление активно';
     } catch {
       elements.leaderboardStatus.textContent = 'Получены некорректные данные';
@@ -417,15 +442,14 @@ async function loadGame() {
   try {
     game = await api('/api/game');
     if (
-      game?.schemaVersion !== 3 ||
+      game?.schemaVersion !== 4 ||
       !Array.isArray(game.games) ||
       game.games.length !== 2 ||
       !game.games.every(isValidDailyGamePayload)
     ) {
-      throw new Error('Сервер вернул устаревшие данные. Выполните полный деплой версии 2.1.');
+      throw new Error('Сервер вернул устаревшие данные. Выполните полный деплой версии 2.2.');
     }
     activeGameIndex = 0;
-    renderPlayerChip(game.player);
     renderActiveGame();
     startCountdown(game.nextResetAt);
     setState('content');

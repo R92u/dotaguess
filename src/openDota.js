@@ -17,7 +17,7 @@ export function normalizeItemsById(rawItems) {
 }
 
 export class OpenDotaClient {
-  constructor({ apiKey = '', timeoutMs = 12_000 } = {}) {
+  constructor({ apiKey = '', timeoutMs = 15_000 } = {}) {
     this.apiKey = apiKey;
     this.timeoutMs = timeoutMs;
     this.constantsCache = null;
@@ -30,6 +30,11 @@ export class OpenDotaClient {
 
   async getRecentMatches(accountId) {
     return this.#get(`/players/${accountId}/recentMatches`);
+  }
+
+  async getPlayerMatches(accountId, limit = 100) {
+    const safeLimit = Math.max(1, Math.min(500, Number(limit) || 100));
+    return this.#get(`/players/${accountId}/matches?limit=${safeLimit}`);
   }
 
   async getMatch(matchId) {
@@ -69,7 +74,7 @@ export class OpenDotaClient {
         const response = await fetch(url, {
           headers: {
             accept: 'application/json',
-            'user-agent': 'dota-match-guess/2.1'
+            'user-agent': 'dota-match-guess/2.2'
           },
           signal: controller.signal
         });
@@ -90,7 +95,7 @@ export class OpenDotaClient {
         clearTimeout(timer);
       }
 
-      await sleep(350 * 2 ** attempt);
+      await sleep(500 * 2 ** attempt);
     }
 
     throw lastError || new Error('OpenDota request failed');
