@@ -1,6 +1,6 @@
 {
   "name": "dota-match-guess-public",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "private": true,
   "description": "Публичный сайт Dota Match Guess с отдельным защищённым административным API.",
   "type": "module",

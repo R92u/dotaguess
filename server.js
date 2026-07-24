@@ -10,7 +10,7 @@ import { GameService } from './src/gameService.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
-const APP_VERSION = '2.5.0';
+const APP_VERSION = '2.5.1';
 const store = await createStore({ databaseUrl: config.databaseUrl, dataDir: config.dataDir });
 const client = new OpenDotaClient({ apiKey: config.openDotaApiKey });
 const gameService = new GameService({
